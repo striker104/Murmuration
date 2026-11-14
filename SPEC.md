@@ -249,6 +249,10 @@ Control is the test harness, **not** part of the team. It is never blocked by `b
 
 Example: `{"type":"ctl","cmd":"block","peers":["nicla"]}`
 
+*Test-only extra (A's sim, not a dashboard button, Nicla can ignore it):*
+`{"type":"ctl","cmd":"spot","tag":7}` makes a camera node act as if it saw tag 7
+(respects `blind`). Used by `sim/fake_camera.py`.
+
 **UDP can drop control messages:** the dashboard sends every control command **3 times, 0.1 s
 apart**. Every command is safe to repeat (repeating it has the same effect as sending it once).
 
