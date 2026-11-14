@@ -37,6 +37,19 @@ class Scenarios(unittest.TestCase):
         self.assertTrue(s.run_until(lambda: finished_and_agree(s), 120))
         self.assertLessEqual(s.max_bytes, MAX_GOSSIP_BYTES)   # chunking works (10 jobs)
 
+    def test_connected_with_zero_jobs(self):
+        # empty gossip is the heartbeat: no cards yet must still mean "connected"
+        s = Sim()
+        s.run(3)
+        for n in s.nodes.values():
+            self.assertEqual(n.mode, "connected", n.name)
+        s.spot("webcam", 1)
+        s.run(2)
+        s.ctl(list(s.nodes), "reset")
+        s.run(3)
+        for n in s.nodes.values():
+            self.assertEqual(n.mode, "connected", n.name + " after reset")
+
     def test_new_card_reaches_everyone_within_1s(self):
         s = Sim()
         s.run(3)

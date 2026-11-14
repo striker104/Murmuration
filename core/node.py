@@ -333,12 +333,16 @@ class Node:
         return [p for p in self.peers if p not in self.blocked]
 
     def gossip_messages(self):
-        """Full job list, chunked into messages of <= CHUNK_JOBS jobs (SPEC §8.1)."""
+        """Full job list, chunked into messages of <= CHUNK_JOBS jobs (SPEC §8.1).
+
+        Always at least ONE message, even with zero jobs: gossip is also the heartbeat
+        that tells peers we're alive (otherwise everyone looks isolated until a card appears).
+        """
         if self.crashed:
             return []
         ids = sorted(self.jobs, key=lambda j: int(j))
         msgs = []
-        for i in range(0, len(ids), CHUNK_JOBS):
+        for i in range(0, max(len(ids), 1), CHUNK_JOBS):
             self.gossip_seq += 1
             msgs.append({
                 "type": "gossip", "v": 1, "from": self.name, "seq": self.gossip_seq,
