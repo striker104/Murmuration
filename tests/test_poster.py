@@ -28,10 +28,28 @@ class TunnelOutput(unittest.TestCase):
         self.assertEqual(find_url(line), "https://a1b2c3d4e5f6.lhr.life")
         self.assertIsNone(find_url("visit https://admin.localhost.run/ to set up a custom domain"))
 
+    def test_finds_the_real_localhost_run_link_with_app_subdomain(self):
+        line = ("a60b033218d719.app.lhr.life tunneled with tls termination, "
+                "https://a60b033218d719.app.lhr.life")
+        self.assertEqual(find_url(line), "https://a60b033218d719.app.lhr.life")
+
     def test_ignores_other_lines(self):
         for line in ["INF Requesting new quick Tunnel on trycloudflare.com...",
                      "https://api.trycloudflare.com/tunnel", "", "ERR something"]:
             self.assertIsNone(find_url(line), line)
+
+
+class RotatingLink(unittest.TestCase):
+    def test_new_link_from_the_tunnel_is_noticed(self):
+        from sim.public_link import start_tunnel
+        code = ("import time;print('https://aaa.app.lhr.life', flush=True);time.sleep(0.5);"
+                "print('https://bbb.app.lhr.life', flush=True);time.sleep(30)")
+        proc, url, updates = start_tunnel([sys.executable, "-c", code], 5, with_updates=True)
+        try:
+            self.assertEqual(url, "https://aaa.app.lhr.life")
+            self.assertEqual(updates.get(timeout=5), "https://bbb.app.lhr.life")
+        finally:
+            proc.terminate()
 
 
 class StartTunnel(unittest.TestCase):

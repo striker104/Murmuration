@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT = os.path.join(ROOT, "cards", "join_qr.png")
-URL_RE = re.compile(r"https://[a-z0-9-]+\.(?:trycloudflare\.com|lhr\.life)")
+URL_RE = re.compile(r"https://[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:trycloudflare\.com|lhr\.life)")
 
 
 def find_url(line):
@@ -66,21 +66,26 @@ def _cloudflared():
     return exe
 
 
-def start_tunnel(cmd, timeout):
-    """Run a tunnel command; -> (process, public url) or (None, None) if no link in time."""
+def start_tunnel(cmd, timeout, with_updates=False):
+    """Run a tunnel command; -> (process, public url) or (None, None) if no link in time.
+    with_updates=True also returns a queue that gets each NEW link later (the free
+    localhost.run domain rotates every so often) and None when the tunnel exits."""
+    fail = (None, None, None) if with_updates else (None, None)
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True)
     except OSError as e:
         print("  can't start %s (%s)" % (cmd[0], e), flush=True)
-        return None, None
+        return fail
     found = queue.Queue()
 
     def read():                      # keep reading forever, or the pipe fills and it freezes
+        last = None
         for line in proc.stdout:
             url = find_url(line)
-            if url:
+            if url and url != last:
                 found.put(url)
+                last = url
         found.put(None)               # it exited
     threading.Thread(target=read, daemon=True).start()
     try:
@@ -89,8 +94,8 @@ def start_tunnel(cmd, timeout):
         url = None
     if not url:
         proc.terminate()
-        return None, None
-    return proc, url
+        return fail
+    return (proc, url, found) if with_updates else (proc, url)
 
 
 def main():
@@ -105,27 +110,38 @@ def main():
     tries.append(("localhost.run", ["ssh", "-o", "StrictHostKeyChecking=accept-new",
                                     "-o", "ServerAliveInterval=30", "-o", "ExitOnForwardFailure=yes",
                                     "-R", "80:" + local, "nokey@localhost.run"]))
-    proc = url = None
+    proc = url = updates = None
     for name, cmd in tries:
         print("starting public link via %s (up to 30 s)..." % name, flush=True)
-        proc, url = start_tunnel(cmd, 30)
+        proc, url, updates = start_tunnel(cmd, 30, with_updates=True)
         if url:
             break
         print("  %s didn't give a link (blocked on this network?)" % name, flush=True)
     if not url:
         raise SystemExit("no public link possible here. Fallback: judges type on this laptop "
                          "(http://192.168.137.1:%s) and use the printed LIVE cards." % port)
+    def show(link):
+        img = poster(link)
+        cv2.imwrite(OUT, img)
+        cv2.imshow("Scan me", img)
+        print("\n  PUBLIC LINK:  %s\n  QR saved to:  %s\n  (wait ~10 s before the first "
+              "scan; Ctrl-C or q in the QR window stops the link)\n" % (link, OUT), flush=True)
+
     try:
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
-        img = poster(url)
-        cv2.imwrite(OUT, img)
-        print("\n  PUBLIC LINK:  %s\n  QR saved to:  %s\n  (wait ~10 s before the first "
-              "scan; Ctrl-C or q in the QR window stops the link)\n" % (url, OUT), flush=True)
         cv2.namedWindow("Scan me", cv2.WINDOW_NORMAL)
-        cv2.imshow("Scan me", img)
+        show(url)
         while proc.poll() is None:
             if cv2.waitKey(500) & 0xFF == ord("q"):
                 break
+            try:
+                new = updates.get_nowait()
+            except queue.Empty:
+                new = None
+            if new and new != url:            # the free domain rotated: new QR on screen
+                url = new
+                print("link changed!", flush=True)
+                show(url)
         if proc.poll() is not None:
             print("the tunnel stopped — run this again for a new link", flush=True)
     except KeyboardInterrupt:
