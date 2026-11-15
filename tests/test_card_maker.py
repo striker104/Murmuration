@@ -66,22 +66,18 @@ class Build(unittest.TestCase):
 
 
 class Web(unittest.TestCase):
-    def test_add_entry_appends_a_line_and_page_escapes_html(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "entries.txt")
-            cm.add_entry(path, {"name": ["<b>Bob</b>"], "message": ["help|me"], "level": ["hard"]})
-            with open(path, encoding="utf-8") as f:
-                entries = cm.parse(f.read())
-            self.assertEqual(entries, [("<b>Bob</b>", "help/me", "hard")])
-            page = cm.render_page(entries, note="")
-            self.assertIn("&lt;b&gt;Bob&lt;/b&gt;", page)
-            self.assertNotIn("<b>Bob</b>", page)
+    def test_form_entry_cleans_and_rejects_empty(self):
+        self.assertEqual(cm.form_entry({"name": ["<b>Bob</b>"], "message": ["help|me"],
+                                        "level": ["hard"]}), ("<b>Bob</b>", "help/me", "hard"))
+        self.assertIsNone(cm.form_entry({"name": ["x"], "message": [" "]}))
 
-    def test_empty_message_is_ignored(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "entries.txt")
-            self.assertFalse(cm.add_entry(path, {"name": ["x"], "message": [" "]}))
-            self.assertFalse(os.path.exists(path))
+    def test_page_shows_your_card_number_and_escapes_html(self):
+        cards = [("103", "<b>Bob</b>", "hard")]
+        page = cm.render_page(cards, card="103")
+        self.assertIn("#103", page)
+        self.assertIn("&lt;b&gt;Bob&lt;/b&gt;", page)
+        self.assertNotIn("<b>Bob</b>", page)
+        self.assertNotIn("Your card is", cm.render_page(cards))
 
 
 if __name__ == "__main__":

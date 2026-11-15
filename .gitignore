@@ -5,3 +5,5 @@ murmuration.log
 answer_key.txt
 sim/entries.txt
 beacons.prev.json
+sim/live.json
+sim/live.json.tmp

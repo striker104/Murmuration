@@ -1,14 +1,16 @@
 """Card maker: people write distress messages -> each is locked with a RANDOM secret PIN at the
 difficulty they chose -> beacons.json + printable cards. Nobody (not even us) knows the PINs.
 
-    python sim/card_maker.py serve              web form on http://<this laptop>:8080
+    python sim/card_maker.py serve              LIVE judge cards: web form on port 8080
                                                 (phones on the hotspot: http://192.168.137.1:8080)
+                                                "Lock it" -> next card 100-199, lock sent to every
+                                                node (SPEC §12); dashboard reads /locks.json
     python sim/card_maker.py make entries.txt   from a file (lines or a Microsoft Forms CSV export)
 
 Entry lines:   Maria | Trapped under desk, room 3B | hard        (easy / medium / hard)
 Forms CSV:     columns whose names contain "name", "message", "difficult" are used.
 
-New cards get ids from --start (default 100) upward and are ADDED to beacons.json (the preset
+File-made cards get ids from --start (default 200; 100-199 = live judge cards) upward and are ADDED to beacons.json (the preset
 cards 0-99 stay). Previous file is kept as beacons.prev.json. The secret PINs go to
 answer_key.txt (git-ignored) so you can check afterwards. After making cards: copy
 beacons.json to every device (+ Nicla, + dashboard laptop) and restart the nodes.
@@ -22,14 +24,15 @@ import os
 import random
 import shutil
 import sys
-from urllib.parse import parse_qs
+import time
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from core.beacon import lock, unlock      # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 BEACONS = os.path.join(ROOT, "beacons.json")
-ENTRIES = os.path.join(ROOT, "sim", "entries.txt")
+LIVE_STATE = os.path.join(ROOT, "sim", "live.json")
 ANSWERS = os.path.join(ROOT, "answer_key.txt")
 CARDS_DIR = os.path.join(ROOT, "cards")
 
@@ -38,7 +41,7 @@ MAX_MESSAGE = 60
 # level: (digits, lowest PIN, highest PIN). Random PIN inside the band: never a fluke like
 # 0003 that finishes instantly, never so high it drags. Times at measured rates (x0.6 duty):
 #   easy   Pi ~5-12 s       medium  UNO Q ~4-10 s     hard  laptop ~10-21 s
-LEVELS = {"easy": (3, 400, 999), "medium": (4, 4000, 9999), "hard": (5, 30000, 65000)}
+from sim.live_locks import LEVELS   # noqa: E402  (easy/medium/hard -> digits + PIN band)
 RATES = [("laptop", 3100), ("unoq", 1000), ("pi", 83)]   # effective guesses/s while running
 
 
@@ -126,7 +129,7 @@ def write_beacons(path, beacons, rounds):
         json.dump({"rounds": rounds, "beacons": beacons}, f, indent=1, sort_keys=True)
 
 
-def make(entries, start_id=100):
+def make(entries, start_id=200):
     """Add the entries to the repo's beacons.json, write answer key + card sheets. -> report."""
     with open(BEACONS) as f:
         current = json.load(f)
@@ -167,50 +170,68 @@ def _cards(ids):
     return files
 
 
-# ---- web form ---------------------------------------------------------------------
+# ---- web form: LIVE judge cards (SPEC §12) -------------------------------------------
 
-def add_entry(path, form):
-    """form = parse_qs dict. Appends one 'name | message | level' line. -> True if added."""
+def form_entry(form):
+    """parse_qs dict -> (name, message, level), or None if the message is empty."""
     name = _clean((form.get("name") or ["?"])[0], MAX_NAME) or "?"
     msg = _clean((form.get("message") or [""])[0], MAX_MESSAGE)
     level = _level((form.get("level") or ["medium"])[0])
-    if not msg:
-        return False
-    with open(path, "a", encoding="utf-8") as f:
-        f.write("%s | %s | %s\n" % (name, msg, level))
-    return True
+    return (name, msg, level) if msg else None
 
 
-def render_page(entries, note=""):
+def render_page(cards, card=None, error=""):
+    """cards = [(id, name, level)] handed out so far; card = the one this visitor just got."""
     e = html.escape
-    rows = "".join("<li><b>%s</b> (%s): %s</li>" % (e(n), e(l), e(m)) for n, m, l in entries)
+    rows = "".join("<li>#%s <b>%s</b> (%s)</li>" % (e(c), e(n), e(l)) for c, n, l in cards)
     opts = "".join('<option value="%s"%s>%s</option>' % (l, " selected" if l == "medium" else "",
                                                         l.capitalize()) for l in LEVELS)
+    got = ""
+    if card:
+        got = ('<div class="got">Your card is <span>#%s</span>Pick up card #%s and show it '
+               'to a camera. The swarm will crack your PIN.</div>' % (e(card), e(card)))
+    err = '<p class="err">%s</p>' % e(error) if error else ""
     return """<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Murmuration cards</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Murmuration</title>
 <style>body{font-family:sans-serif;max-width:520px;margin:16px auto;padding:0 16px;background:#111;color:#eee}
 input,textarea,select,button{width:100%%;font-size:18px;margin:6px 0;padding:8px;box-sizing:border-box}
-button{background:#2a7;color:#fff;border:0}pre{white-space:pre-wrap;background:#222;padding:8px}</style></head>
-<body><h2>Send a distress message</h2>
-<p>It gets locked with a secret PIN. The swarm has to crack it to read it.</p>
+button{background:#2a7;color:#fff;border:0}.err{color:#f66}
+.got{background:#253;padding:12px;margin:12px 0;font-size:18px}.got span{display:block;font-size:56px;font-weight:bold}
+</style></head><body>%s%s<h2>Send a distress message</h2>
+<p>It gets locked with a secret PIN nobody knows. The swarm has to crack it to read it.</p>
 <form method="post" action="/add">
 <input name="name" maxlength="%d" placeholder="Your name" required>
 <textarea name="message" maxlength="%d" rows="3" placeholder="Your message" required></textarea>
 <select name="level">%s</select><button>Lock it</button></form>
-<h3>Messages so far (%d)</h3><ol>%s</ol>
-<form method="post" action="/make"><button style="background:#a52">Make cards (operator)</button></form>
-<pre>%s</pre></body></html>""" % (MAX_NAME, MAX_MESSAGE, opts, len(entries), rows, e(note))
+<h3>Live cards (%d)</h3><ol>%s</ol></body></html>""" % (
+        got, err, MAX_NAME, MAX_MESSAGE, opts, len(cards), rows)
 
 
-def serve(port, start_id):
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    state = {"note": "", "made": 0}
+def serve(port, config_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from core.net import load_config
+    from sim.live_locks import LiveLocks, ctl_targets, send_all
 
-    def entries():
-        if not os.path.exists(ENTRIES):
-            return []
-        with open(ENTRIES, encoding="utf-8") as f:
-            return parse(f.read())
+    with open(BEACONS) as f:
+        preset = json.load(f)
+    live = LiveLocks(LIVE_STATE, int(preset["rounds"]), taken=preset["beacons"], answers=ANSWERS)
+    targets = ctl_targets(load_config(config_path))
+    mutex = threading.Lock()
+
+    def cards():
+        b = live.state["beacons"]
+        return [(c, b[c]["title"], {3: "easy", 4: "medium", 5: "hard"}.get(b[c]["digits"], "?"))
+                for c in sorted(b, key=int)]
+
+    def resend_forever():
+        while True:                          # SPEC §12.2: every live lock again every 5 s
+            time.sleep(5.0)
+            with mutex:
+                msgs = live.all_messages()
+            if msgs:
+                send_all(msgs, targets, repeat=1)
+    threading.Thread(target=resend_forever, daemon=True).start()
 
     class H(BaseHTTPRequestHandler):
         def _send(self, body, ctype="text/html; charset=utf-8"):
@@ -218,52 +239,59 @@ def serve(port, start_id):
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")    # dashboard may fetch this
             self.end_headers()
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path.startswith("/cards/") and self.path.endswith(".png"):
-                p = os.path.join(CARDS_DIR, os.path.basename(self.path))
-                if os.path.exists(p):
-                    with open(p, "rb") as f:
-                        return self._send(f.read(), "image/png")
-            self._send(render_page(entries(), state["note"]))
+            url = urlparse(self.path)
+            if url.path == "/locks.json":
+                with mutex:
+                    return self._send(json.dumps(live.locks_json()), "application/json")
+            q = parse_qs(url.query)
+            with mutex:
+                page = render_page(cards(), (q.get("card") or [None])[0], (q.get("err") or [""])[0])
+            self._send(page)
 
         def do_POST(self):
             n = int(self.headers.get("Content-Length") or 0)
-            form = parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
-            if self.path == "/add":
-                state["note"] = "Locked. Thank you!" if add_entry(ENTRIES, form) else "Empty message."
-            elif self.path == "/make":
-                todo = entries()[state["made"]:]
-                if todo:
-                    try:
-                        state["note"] = make(todo, start_id + state["made"])
-                        state["made"] += len(todo)
-                    except Exception as ex:          # show it on the page, keep serving
-                        state["note"] = "ERROR: %s" % ex
-                else:
-                    state["note"] = "No new messages."
+            entry = form_entry(parse_qs(self.rfile.read(n).decode("utf-8", "replace")))
+            where = "/?err=Please+type+a+message"
+            if entry and self.path == "/add":
+                try:
+                    with mutex:
+                        cid, _, _ = live.add(*entry)
+                        msg = live.lock_message(cid)
+                    send_all([msg], targets, repeat=3)
+                    print("live card #%s for %s (%s) sent to %d nodes"
+                          % (cid, entry[0], entry[2], len(targets)), flush=True)
+                    where = "/?card=%s" % cid
+                except ValueError as ex:
+                    where = "/?err=" + quote_plus(str(ex))
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", where)
             self.end_headers()
 
         def log_message(self, *a):
             pass
 
-    print("card maker on http://0.0.0.0:%d  (phones: http://192.168.137.1:%d)" % (port, port))
-    HTTPServer(("", port), H).serve_forever()
+    print("card maker (live judge cards) on http://0.0.0.0:%d  phones: http://192.168.137.1:%d"
+          % (port, port))
+    print("locks go to: %s" % ", ".join("%s:%d" % t for t in targets), flush=True)
+    ThreadingHTTPServer(("", port), H).serve_forever()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["serve", "make"])
     ap.add_argument("file", nargs="?", help="entries file for 'make'")
-    ap.add_argument("--start", type=int, default=100, help="first card id for new cards")
+    ap.add_argument("--start", type=int, default=200, help="first card id for file-made cards")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--config", default=os.path.join(ROOT, "config.json"),
+                    help="where to send live locks (every node's ctl port)")
     a = ap.parse_args()
     if a.cmd == "serve":
-        serve(a.port, a.start)
+        serve(a.port, a.config)
     else:
         if not a.file:
             raise SystemExit("usage: card_maker.py make entries.txt")

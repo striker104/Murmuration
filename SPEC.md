@@ -407,13 +407,15 @@ If behind, cut in this order: Nicla working jobs (spotter-only) → UNO Q MCU fa
 
 ---
 
-## 12. DRAFT — live locks (judge messages)  ⚠ needs B's OK before anyone builds it
+## 12. DRAFT — live locks (judge messages)  ⚠ needs B's OK — A's side is BUILT + tested
 
 **Goal:** a judge types a message on their phone (card maker page, `sim/card_maker.py serve`
 on the webcam laptop, port 8080), gets told "your card is #103", holds pre-printed card #103 up
 to a camera, and the swarm cracks it live. No copying files, no restarts.
 
-**Card ids:** 0–99 = presets in `beacons.json`. **100+ = live cards** (pre-print 100–119).
+**Card ids:** 0–99 = presets in `beacons.json`. **100–199 = live cards** (pre-print 100–119).
+200+ = cards made from a file with `card_maker.py make` (they go into `beacons.json`).
+A card that IS in `beacons.json` is never treated as live, whatever its number.
 
 ### 12.1 New optional job field `lock`
 ```json
@@ -437,10 +439,14 @@ maker). `title` ≤ 12 chars, `digits` 3–5.
 - Sent 3× 0.1 s apart when the judge taps "Lock it", then **every live lock is re-sent every 5 s**
   (so a rebooted node catches up). `reset` clears jobs but **keeps** live locks.
 
-### 12.3 Safety rule (decode mode)
-A card with id ≥ 100 whose lock I don't know yet is **not worked or claimed** (it stays in the
-job list, unowned) until I learn its lock. Cards < 100 with no beacon: counter work as today.
-*(Stops any node doing fake counter progress on a live card — the earlier Nicla problem.)*
+### 12.3 Safety rules (decode mode, live cards only)
+1. A live card whose lock I don't know yet is **not worked or claimed** (it stays in the job
+   list, unowned) until I learn its lock. Cards < 100 with no beacon: counter work as today.
+2. A received copy of a live card **without** a `lock` field is treated as "this card exists"
+   only (keep id/zone/spotted_by; ignore its progress/done/claim/workers/pin) — a node that
+   doesn't carry the lock can't have checked any PINs. Same treatment as a counter-marked peer.
+*(Together these stop fake counter progress on a live card. Bonus: a Nicla that doesn't support
+locks yet is harmless — it just doesn't help with live cards.)*
 
 ### 12.4 Gossip size
 Locks add ~100 bytes per live job, so a gossip message holds **at most 6 jobs AND at most
