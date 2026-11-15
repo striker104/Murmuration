@@ -62,6 +62,10 @@ def merge_job(a, b):
     org = a if origin_key(a) <= origin_key(b) else b
     out["zone"] = org.get("zone")
     out["spotted_by"] = org.get("spotted_by")
+
+    # decode mode: a found PIN is never lost (if two differ, the lower string, so all agree)
+    pins = [p for p in (a.get("pin"), b.get("pin")) if p is not None]
+    out["pin"] = min(pins) if pins else None
     # id, sev: keep local (identical anyway)
     return out
 
@@ -83,6 +87,7 @@ def new_job(tag_id, zone, spotted_by):
         "epoch": 0,
         "bid": None,
         "workers": [],
+        "pin": None,
     }
 
 

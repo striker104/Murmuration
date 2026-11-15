@@ -113,7 +113,8 @@ no real clock). All timeouts use each node's *own* monotonic clock (`time.monoto
   "owner": "unoq",      // null if unclaimed
   "epoch": 0,           // increases every time someone TAKES OVER a job from another owner
   "bid": 8.33,          // owner's bid (lower is better) = 1/speed (+ small zone bonus)
-  "workers": ["unoq"]   // every node that ever advanced this job (for duplicate-effort score)
+  "workers": ["unoq"],  // every node that ever advanced this job (for duplicate-effort score)
+  "pin": null           // DECODE MODE: the PIN once found ("0420"), else null. Missing = null.
 }
 ```
 
@@ -142,6 +143,7 @@ no real clock). All timeouts use each node's *own* monotonic clock (`time.monoto
 | `progress` | `max(a, b)` |
 | claim (`owner`, `epoch`, `bid`) | take the claim from whichever side wins: **higher `epoch`** wins; tie → **lower `bid`**; tie → **lower `owner` name**. A `null` owner loses to any real owner at the same epoch. |
 | `workers` | union (sorted) |
+| `pin` | non-null wins; both non-null → **lower** string (missing field = null) |
 | `id`, `sev` | keep local (identical anyway — both come from the tag id) |
 | `zone`, `spotted_by` | take both from the side whose `spotted_by` name is **lower** (alphabetically). Needed because a card on the middle line can be spotted by both cameras with different zones — "keep local" would never converge and isn't commutative |
 
