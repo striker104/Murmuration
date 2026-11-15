@@ -39,6 +39,10 @@ class ScenarioCommands(unittest.TestCase):
         self.assertEqual(sent("cut", x="pi", y="unoq"),
                          {"pi": [("block", {"peers": ["unoq"]})], "unoq": [("block", {"peers": ["pi"]})]})
 
+    def test_uncut_restores_just_that_link(self):
+        self.assertEqual(sent("uncut", x="pi", y="unoq"),
+                         {"pi": [("unblock", {"peers": ["unoq"]})], "unoq": [("unblock", {"peers": ["pi"]})]})
+
     def test_split(self):
         got = sent("split")
         for n in ("webcam", "unoq"):
@@ -54,7 +58,8 @@ class ScenarioCommands(unittest.TestCase):
 
     def test_bad_input(self):
         for name, params in (("nope", {}), ("crash", {}), ("crash", {"x": "bob"}),
-                             ("cut", {"x": "pi", "y": "pi"}), ("flaky", {"loss": 2})):
+                             ("cut", {"x": "pi", "y": "pi"}), ("uncut", {"x": "pi", "y": "pi"}),
+                             ("uncut", {"x": "pi"}), ("flaky", {"loss": 2})):
             with self.assertRaises(ValueError):
                 server.build_commands(name, params, CFG)
 
@@ -151,6 +156,7 @@ class EventWording(unittest.TestCase):
                  ("split", {}, "Split the team"), ("cameras_blind", {}, "Blinded both cameras"),
                  ("reset", {}, "Reset the round"),
                  ("cut", {"x": "webcam", "y": "nicla"}, "Cut the link between webcam and nicla"),
+                 ("uncut", {"x": "webcam", "y": "nicla"}, "Restored the link between webcam and nicla"),
                  ("blind", {"x": "nicla"}, "Blinded nicla's camera"),
                  ("unblind", {"x": "nicla"}, "Restored nicla's camera"),
                  ("crash", {"x": "pi"}, "Crashed pi"), ("revive", {"x": "pi"}, "Revived pi"),

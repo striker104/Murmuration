@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 44" width="512" height="352" role="img" aria-label="Murmuration logo: a small swarm">
+  <rect width="64" height="44" rx="8" fill="#0C0D0F"/>
+  <g fill="#ECEDEE">
+    <path d="M6 30l7-3-2 6z" opacity=".45"/><path d="M15 22l7-3-2 6z" opacity=".7"/><path d="M17 33l7-3-2 6z" opacity=".4"/>
+    <path d="M25 14l7-3-2 6z"/><path d="M27 25l7-3-2 6z" opacity=".8"/><path d="M36 9l7-3-2 6z" opacity=".7"/>
+    <path d="M37 19l7-3-2 6z"/><path d="M39 30l7-3-2 6z" opacity=".45"/><path d="M47 13l7-3-2 6z" opacity=".8"/>
+    <path d="M49 24l7-3-2 6z" opacity=".6"/><path d="M56 7l6-3-2 6z" opacity=".4"/>
+  </g>
+</svg>
