@@ -8,8 +8,8 @@ difficulty they chose -> beacons.json + printable cards. Nobody (not even us) kn
 Entry lines:   Maria | Trapped under desk, room 3B | hard        (easy / medium / hard)
 Forms CSV:     columns whose names contain "name", "message", "difficult" are used.
 
-New cards get ids from --start (default 20) upward and are ADDED to beacons.json (the preset
-cards 0-11 stay). Previous file is kept as beacons.prev.json. The secret PINs go to
+New cards get ids from --start (default 100) upward and are ADDED to beacons.json (the preset
+cards 0-99 stay). Previous file is kept as beacons.prev.json. The secret PINs go to
 answer_key.txt (git-ignored) so you can check afterwards. After making cards: copy
 beacons.json to every device (+ Nicla, + dashboard laptop) and restart the nodes.
 """
@@ -126,7 +126,7 @@ def write_beacons(path, beacons, rounds):
         json.dump({"rounds": rounds, "beacons": beacons}, f, indent=1, sort_keys=True)
 
 
-def make(entries, start_id=20):
+def make(entries, start_id=100):
     """Add the entries to the repo's beacons.json, write answer key + card sheets. -> report."""
     with open(BEACONS) as f:
         current = json.load(f)
@@ -259,7 +259,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["serve", "make"])
     ap.add_argument("file", nargs="?", help="entries file for 'make'")
-    ap.add_argument("--start", type=int, default=20, help="first card id for new cards")
+    ap.add_argument("--start", type=int, default=100, help="first card id for new cards")
     ap.add_argument("--port", type=int, default=8080)
     a = ap.parse_args()
     if a.cmd == "serve":

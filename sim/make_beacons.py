@@ -9,11 +9,13 @@ Same salt every run (derived from the card id) -> regenerating gives the same fi
 import hashlib
 import json
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from core.beacon import lock, unlock      # noqa: E402
 from core.node import WORK_FRACTION       # noqa: E402
+from sim.card_maker import LEVELS         # noqa: E402
 
 ROUNDS = 500
 OUT = os.path.join(os.path.dirname(__file__), "..", "beacons.json")
@@ -38,6 +40,35 @@ CARDS = {
 RATES = [("laptop", 5210), ("unoq", 1674), ("pi", 139), ("nicla", 30)]
 
 
+# cards 12-99: generated rescue stories (same every run). Live judge cards start at 100.
+NAMES = ["Lena", "Marco", "Ife", "Chen", "Ola", "Grace", "Yusuf", "Mila", "Dev", "Rosa", "Kofi",
+         "Hana", "Ben", "Amara", "Luis", "Sara", "Tariq", "Jade", "Niko", "Femi", "Ivy", "Raj",
+         "Elif", "Owen", "Noor", "Kai", "Bea", "Sami", "Tess", "Juan"]
+PLACES = ["stairwell C", "lift lobby", "car park P2", "room 4A", "kitchen", "server room",
+          "library", "gym", "roof", "basement", "corridor 6", "lab 3", "canteen", "garage",
+          "atrium", "toilets L1", "office 12", "storeroom", "chapel", "bus stop"]
+STATES = ["smoke, can walk", "leg trapped", "door jammed", "no light", "water rising",
+          "with a child", "dizzy, sitting", "arm hurt", "calm, waiting", "can hear you",
+          "needs inhaler", "glass cuts", "with 2 others", "cold, shaking", "phone at 3%"]
+LEVEL_CYCLE = ["easy", "medium", "hard", "medium", "easy", "hard", "medium"]
+
+
+def generated_card(cid):
+    rng = random.Random("murmuration-card-%d" % cid)
+    name = rng.choice(NAMES)
+    msg = "%s, %d: %s, %s." % (name, rng.randint(6, 85), rng.choice(PLACES), rng.choice(STATES))
+    level = LEVEL_CYCLE[cid % len(LEVEL_CYCLE)]
+    digits, lo, hi = LEVELS[level]
+    return (name, msg[:60], digits, str(rng.randint(lo, hi)).zfill(digits))
+
+
+def all_cards():
+    cards = dict(CARDS)
+    for cid in range(12, 100):
+        cards[cid] = generated_card(cid)
+    return cards
+
+
 def salt_for(card):
     return hashlib.sha256(("murmuration-%d" % card).encode()).hexdigest()[:8]
 
@@ -45,7 +76,7 @@ def salt_for(card):
 def main():
     beacons = {}
     print("card digits  pin    " + "  ".join("%7s" % n for n, _ in RATES) + "   (seconds)")
-    for card, (who, msg, digits, pin) in sorted(CARDS.items()):
+    for card, (who, msg, digits, pin) in sorted(all_cards().items()):
         assert len(pin) == digits, card
         b = lock(who, msg, pin, digits, salt_for(card), ROUNDS)
         assert unlock(b, pin, ROUNDS) == msg
