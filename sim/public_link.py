@@ -98,18 +98,28 @@ def start_tunnel(cmd, timeout, with_updates=False):
     return (proc, url, found) if with_updates else (proc, url)
 
 
-def main():
-    import cv2
-    port = sys.argv[1] if len(sys.argv) > 1 else "8080"
-    local = "localhost:%s" % port
+def tunnel_commands(port, cloudflared=None):
+    """[(name, command)] to try in order. Target is 127.0.0.1, NOT 'localhost': on Windows
+    'localhost' can mean IPv6 ::1, where the card maker isn't listening -> blank page."""
+    local = "127.0.0.1:%s" % port
     tries = []
-    try:
-        tries.append(("Cloudflare", [_cloudflared(), "tunnel", "--url", "http://" + local]))
-    except SystemExit as e:
-        print("  %s" % e, flush=True)
+    if cloudflared:
+        tries.append(("Cloudflare", [cloudflared, "tunnel", "--url", "http://" + local]))
     tries.append(("localhost.run", ["ssh", "-o", "StrictHostKeyChecking=accept-new",
                                     "-o", "ServerAliveInterval=30", "-o", "ExitOnForwardFailure=yes",
                                     "-R", "80:" + local, "nokey@localhost.run"]))
+    return tries
+
+
+def main():
+    import cv2
+    port = sys.argv[1] if len(sys.argv) > 1 else "8080"
+    try:
+        exe = _cloudflared()
+    except SystemExit as e:
+        print("  %s" % e, flush=True)
+        exe = None
+    tries = tunnel_commands(port, exe)
     proc = url = updates = None
     for name, cmd in tries:
         print("starting public link via %s (up to 30 s)..." % name, flush=True)

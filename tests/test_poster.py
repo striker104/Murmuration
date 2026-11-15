@@ -39,6 +39,16 @@ class TunnelOutput(unittest.TestCase):
             self.assertIsNone(find_url(line), line)
 
 
+class Commands(unittest.TestCase):
+    def test_tunnels_point_at_ipv4_not_localhost(self):
+        # the card maker listens on IPv4 only; 'localhost' can resolve to ::1 on Windows
+        from sim.public_link import tunnel_commands
+        for name, cmd in tunnel_commands("8080", cloudflared="cloudflared.exe"):
+            joined = " ".join(cmd)
+            self.assertIn("127.0.0.1:8080", joined, name)
+            self.assertNotIn("localhost:8080", joined, name)
+
+
 class RotatingLink(unittest.TestCase):
     def test_new_link_from_the_tunnel_is_noticed(self):
         from sim.public_link import start_tunnel
