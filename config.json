@@ -1,7 +1,7 @@
 {
   "nodes": {
     "webcam": {"ip": "192.168.137.1",   "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": "A"},
-    "nicla":  {"ip": "192.168.137.171", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.05, "zone": "B"},
+    "nicla":  {"ip": "192.168.137.22" , "gossip_port": 5005, "ctl_port": 5007, "speed": 0.05, "zone": "B"},
     "unoq":   {"ip": "192.168.137.54",  "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": null},
     "pi":     {"ip": "192.168.137.55",  "gossip_port": 5005, "ctl_port": 5007, "speed": 0.08, "zone": null}
   },
