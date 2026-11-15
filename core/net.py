@@ -68,9 +68,23 @@ class Runner:
             return self.node.spot(tag_id, time.monotonic())
 
     def snapshot(self):
-        """Copy of the job list + current job, for drawing overlays."""
+        """Copy of what the node believes, for drawing overlays."""
         with self.lock:
-            return json.loads(json.dumps(self.node.jobs)), self.node.current, self.node.mode
+            n = self.node
+            return {
+                "jobs": json.loads(json.dumps(n.jobs)),
+                "current": n.current,
+                "mode": "crashed" if n.crashed else n.mode,
+                "blind": n.blind,
+                "reachable": sorted(n.reachable(time.monotonic())),
+            }
+
+    def control(self, cmd, **extra):
+        """Apply a control command locally (e.g. keyboard shortcut in the camera window)."""
+        msg = {"type": "ctl", "cmd": cmd}
+        msg.update(extra)
+        with self.lock:
+            self.node.on_control(msg, time.monotonic())
 
     # -- the loop ----------------------------------------------------------
     def _recv_all(self, sock):
