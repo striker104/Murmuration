@@ -34,9 +34,10 @@ def decode_setup(name, config):
     try:
         rounds, beacons = beacon.load_beacons(path)
     except (OSError, ValueError, KeyError) as e:
-        print("[%s] WARNING decode mode but can't load %s (%s) -> counter mode"
-              % (name, path, e), flush=True)
-        return None, None, None
+        # refuse to start (like a port clash): a counter-mode node in a decoding swarm would
+        # push progress past PINs nobody checked, and those messages would never unlock
+        raise SystemExit("[%s] decode mode but can't load %s (%s) — copy beacons.json next "
+                         "to the config, or set \"work\": \"counter\"" % (name, path, e))
     rate = config["nodes"][name].get("rate")
     how = "from config"
     if not rate:

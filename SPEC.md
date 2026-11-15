@@ -80,7 +80,11 @@ murmuration/
 unchanged). Then each node loads `beacons.json` (next to the config) and cracks the PIN that locks
 each card's distress message — see `docs/superpowers/specs/2026-11-15-distress-decoding-design.md`.
 Per node, optional `"rate"`: guesses/s to use instead of measuring it at start-up.
-Cards with no beacon still use counter work (`speed`). Missing `beacons.json` → counter mode.
+Cards with no beacon still use counter work (`speed`). Missing `beacons.json` → the node
+refuses to start.
+**Deploy rule: switch to `"work": "decode"` only when EVERY node (incl. the Nicla) decodes.**
+A counter-mode node in a decoding swarm advances beacon jobs without checking PINs, so the
+decoders resume past the real PIN (or the job ends "done" with no pin) — silently.
 
 ---
 

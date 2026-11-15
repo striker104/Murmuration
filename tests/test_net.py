@@ -96,9 +96,10 @@ class DecodeConfig(unittest.TestCase):
         self.assertTrue(r.node.check(b, "07"))
         self.assertFalse(r.node.check(b, "08"))
 
-    def test_decode_missing_file_falls_back(self):
-        r = self.start(False)
-        self.assertIsNone(r.node.beacons)
+    def test_decode_missing_file_refuses_to_start(self):
+        # a counter-mode node in a decoding swarm would push progress past un-checked PINs
+        with self.assertRaises(SystemExit):
+            self.start(False)
 
 
 if __name__ == "__main__":
