@@ -409,9 +409,9 @@ If behind, cut in this order: Nicla working jobs (spotter-only) → UNO Q MCU fa
 
 ## 12. DRAFT — live locks (judge messages)  ⚠ needs B's OK — A's side is BUILT + tested
 
-**Goal:** a judge types a message on their phone (card maker page, `sim/card_maker.py serve`
-on the webcam laptop, port 8080), gets told "your card is #103", holds pre-printed card #103 up
-to a camera, and the swarm cracks it live. No copying files, no restarts.
+**Goal:** a judge types a message on the webcam laptop (card maker page,
+`sim/card_maker.py serve`, port 8080); it becomes card #103 in the swarm straight away and is
+cracked live. No copying files, no restarts, no printed card.
 
 **Card ids:** 0–99 = presets in `beacons.json`. **100–199 = live cards** (pre-print 100–119).
 200+ = cards made from a file with `card_maker.py make` (they go into `beacons.json`).
@@ -438,6 +438,14 @@ maker). `title` ≤ 12 chars, `digits` 3–5.
   (the card must still be spotted by a camera).
 - Sent 3× 0.1 s apart when the judge taps "Lock it", then **every live lock is re-sent every 5 s**
   (so a rebooted node catches up). `reset` clears jobs but **keeps** live locks.
+
+### 12.2b How a judge's message gets in (laptop version)
+Judges type on the webcam laptop (`sim/card_maker.py serve`, http://localhost:8080). "Lock it"
+sends the `lock` command to every node, then the test-style `spot` command
+(`{"type":"ctl","cmd":"spot","tag":"103"}`) to the **webcam** node only, so card #103 enters the
+swarm with no printed card. Other nodes learn the lock from the command and from gossip (§12.1).
+*(Optional, unused in the demo: the webcam can also read a `M1:<id>:<digits>:<SALT>:<CHECK>`
+QR code and treat it the same way.)*
 
 ### 12.3 Safety rules (decode mode, live cards only)
 1. A live card whose lock I don't know yet is **not worked or claimed** (it stays in the job

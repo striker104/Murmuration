@@ -21,6 +21,7 @@ from core.net import Runner, load_config        # noqa: E402
 from core.node import TagStabilizer            # noqa: E402
 from core.run_node import make_logger          # noqa: E402
 from core.status import StatusLine, status_line  # noqa: E402
+from core.beacon import parse_qr                 # noqa: E402
 
 STATUS_EVERY = 0.2      # seconds between redraws of the terminal status line
 
@@ -47,6 +48,26 @@ class TagDetector:
         if ids is None:
             return []
         return [(int(i), c.reshape(4, 2)) for i, c in zip(ids.flatten(), corners)]
+
+
+class QrReader:
+    """Judge QR codes on a phone screen (SPEC §12). Ignores QR codes that aren't ours."""
+
+    def __init__(self):
+        # the Aruco-based QR detector reads small / tilted / blurry phone screens far better
+        self.detector = (cv2.QRCodeDetectorAruco() if hasattr(cv2, "QRCodeDetectorAruco")
+                         else cv2.QRCodeDetector())
+
+    def detect(self, frame):
+        """Returns [(qr text, corners 4x2)] for our 'MURM1|...' codes only."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        try:
+            ok, texts, pts, _ = self.detector.detectAndDecodeMulti(gray)
+        except cv2.error:
+            return []
+        if not ok or pts is None:
+            return []
+        return [(t, p.reshape(4, 2)) for t, p in zip(texts, pts) if parse_qr(t)]
 
 
 # ---- overlay -----------------------------------------------------------------
@@ -123,6 +144,8 @@ def run(args):
     cap = open_camera(args.camera)
     detector = TagDetector()
     stable = TagStabilizer()
+    qr_reader, qr_stable = QrReader(), TagStabilizer()
+    qrs, frame_no = [], 0
     fps, last = 0.0, time.monotonic()
     try:
         while True:
@@ -134,6 +157,17 @@ def run(args):
             tags = detector.detect(frame)
             for tid in stable.feed([t for t, _ in tags]):
                 runner.spot(tid)        # node ignores it if blind / already known
+
+            # judge QR codes on a phone (SPEC §12): slower to find, so every 2nd frame
+            frame_no += 1
+            if frame_no % 2 == 0:
+                qrs = qr_reader.detect(frame)
+                for text in qr_stable.feed([t for t, _ in qrs]):
+                    cid, lock = parse_qr(text)
+                    if runner.spot_live(cid, lock):
+                        status.clear()
+                        print("[%s] judge QR: card #%s (%s, %d-digit PIN)"
+                              % (args.name, cid, lock["title"], lock["digits"]), flush=True)
 
             now = time.monotonic()
             fps = 0.9 * fps + 0.1 * (1.0 / max(now - last, 1e-3))
@@ -148,6 +182,12 @@ def run(args):
                 continue
             snap = runner.snapshot()
             draw_tags(frame, tags, snap["jobs"])
+            for text, pts in qrs:
+                cid = parse_qr(text)[0]
+                cv2.polylines(frame, [pts.astype(np.int32)], True, (255, 120, 0), 3)
+                x, y = pts[0].astype(int)
+                cv2.putText(frame, "QR #%s" % cid, (x, max(20, y - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 120, 0), 2)
             cv2.imshow("Murmuration - %s" % args.name, draw_panel(frame, args.name, snap, fps))
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):

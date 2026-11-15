@@ -87,3 +87,20 @@ def send_all(msgs, targets, repeat=3, gap=0.1):
                 time.sleep(gap)
     finally:
         s.close()
+
+
+def spot_message(cid):
+    """'This card was spotted' for the camera node on this laptop (SPEC §8.3 'spot')."""
+    return {"type": "ctl", "cmd": "spot", "tag": str(cid)}
+
+
+def submit(live, entry, config, spot_node="webcam", repeat=3):
+    """A judge typed a message on this laptop: lock it, send the lock to EVERY node, then tell
+    the webcam node the card was spotted (no printed card needed). -> card id."""
+    name, message, level = entry
+    cid, _, _ = live.add(name, message, level)
+    send_all([live.lock_message(cid)], ctl_targets(config), repeat=repeat)   # lock first...
+    me = config["nodes"].get(spot_node)
+    if me:
+        send_all([spot_message(cid)], [(me["ip"], me["ctl_port"])], repeat=repeat)  # ...then spot
+    return cid

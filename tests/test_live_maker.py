@@ -72,6 +72,48 @@ class Live(unittest.TestCase):
             self.assertEqual(json.loads(data)["id"], "100")
             s.close()
 
+    def test_submit_sends_lock_to_all_and_spot_to_the_webcam(self):
+        from sim.live_locks import submit
+        socks, cfg = {}, {"nodes": {}}
+        for name in ["webcam", "pi"]:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind(("127.0.0.1", 0))
+            s.settimeout(1.0)
+            socks[name] = s
+            cfg["nodes"][name] = {"ip": "127.0.0.1", "ctl_port": s.getsockname()[1]}
+        live = LiveLocks(self.path, rounds=3)
+        cid = submit(live, ("Ana", "canteen", "easy"), cfg, spot_node="webcam", repeat=1)
+        self.assertEqual(cid, "100")
+
+        def got(name):
+            out = []
+            socks[name].settimeout(0.3)
+            try:
+                while True:
+                    out.append(json.loads(socks[name].recvfrom(2048)[0]))
+            except socket.timeout:
+                return out
+        web, pi = got("webcam"), got("pi")
+        self.assertEqual([m["cmd"] for m in web], ["lock", "spot"])     # lock FIRST, then spot
+        self.assertEqual((web[1]["tag"], web[0]["id"]), ("100", "100"))
+        self.assertEqual([m["cmd"] for m in pi], ["lock"])
+        for s in socks.values():
+            s.close()
+
+    def test_typed_message_ends_up_cracked_by_a_node(self):
+        from sim.live_locks import spot_message
+        live = LiveLocks(self.path, rounds=3)
+        cid, _, pin = live.add("Ana", "canteen", "easy", random.Random(5))
+        node = Node("webcam", [], 0.1, "A", beacons={}, rate=500,
+                    check=lambda bb, p: check(bb, p, 3))
+        node.on_control(json.loads(json.dumps(live.lock_message(cid))), 0.0)
+        node.on_control(json.loads(json.dumps(spot_message(cid))), 0.0)
+        t = 0.0
+        while not node.jobs[cid]["done"] and t < 60:
+            t += 0.1
+            node.tick(t)
+        self.assertEqual(node.jobs[cid]["pin"], pin)
+
 
 if __name__ == "__main__":
     unittest.main()

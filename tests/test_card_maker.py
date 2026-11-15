@@ -77,7 +77,20 @@ class Web(unittest.TestCase):
         self.assertIn("#103", page)
         self.assertIn("&lt;b&gt;Bob&lt;/b&gt;", page)
         self.assertNotIn("<b>Bob</b>", page)
-        self.assertNotIn("Your card is", cm.render_page(cards))
+        self.assertIn("in the swarm", page)
+        self.assertNotIn("<img", page)                       # laptop version: nothing to scan
+        self.assertNotIn("in the swarm", cm.render_page(cards))
+
+
+class Fresh(unittest.TestCase):
+    def test_fresh_deletes_the_live_card_state(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "live.json")
+        with open(p, "w") as f:
+            f.write('{"next": 105, "beacons": {}}')
+        self.assertTrue(cm.fresh(p))
+        self.assertFalse(os.path.exists(p))
+        self.assertFalse(cm.fresh(p))            # nothing to delete the second time
 
 
 if __name__ == "__main__":

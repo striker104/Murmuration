@@ -1,11 +1,13 @@
 """Card maker: people write distress messages -> each is locked with a RANDOM secret PIN at the
 difficulty they chose -> beacons.json + printable cards. Nobody (not even us) knows the PINs.
 
-    python sim/card_maker.py serve              LIVE judge cards: web form on port 8080
-                                                (phones on the hotspot: http://192.168.137.1:8080)
-                                                "Lock it" -> next card 100-199, lock sent to every
-                                                node (SPEC §12); dashboard reads /locks.json
+    python sim/card_maker.py serve              LIVE judge cards: judges type on THIS laptop at
+                                                http://localhost:8080. "Lock it" -> next card
+                                                100-199, lock sent to every node, then the webcam
+                                                node is told it spotted it (no printed card);
+                                                dashboard reads /locks.json (SPEC §12)
     python sim/card_maker.py make entries.txt   from a file (lines or a Microsoft Forms CSV export)
+    python sim/card_maker.py fresh              forget live card numbers (then restart all nodes)
 
 Entry lines:   Maria | Trapped under desk, room 3B | hard        (easy / medium / hard)
 Forms CSV:     columns whose names contain "name", "message", "difficult" are used.
@@ -172,6 +174,23 @@ def _cards(ids):
 
 # ---- web form: LIVE judge cards (SPEC §12) -------------------------------------------
 
+def qr_image(text, scale=10):
+    """QR code as a grayscale image (OpenCV, no extra library), with a white border."""
+    import cv2
+    params = cv2.QRCodeEncoder.Params()
+    params.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_M
+    q = cv2.QRCodeEncoder.create(params).encode(text)
+    q = cv2.resize(q, (q.shape[1] * scale, q.shape[0] * scale), interpolation=cv2.INTER_NEAREST)
+    return cv2.copyMakeBorder(q, 4 * scale, 4 * scale, 4 * scale, 4 * scale,
+                              cv2.BORDER_CONSTANT, value=255)
+
+
+def qr_png(text):
+    import cv2
+    ok, buf = cv2.imencode(".png", qr_image(text))
+    return buf.tobytes()
+
+
 def form_entry(form):
     """parse_qs dict -> (name, message, level), or None if the message is empty."""
     name = _clean((form.get("name") or ["?"])[0], MAX_NAME) or "?"
@@ -188,16 +207,15 @@ def render_page(cards, card=None, error=""):
                                                         l.capitalize()) for l in LEVELS)
     got = ""
     if card:
-        got = ('<div class="got">Your card is <span>#%s</span>Pick up card #%s and show it '
-               'to a camera. The swarm will crack your PIN.</div>' % (e(card), e(card)))
+        got = ('<div class="got">Your message is card <span>#%s</span>It is in the swarm now: '
+               'watch the dashboard while the devices crack your secret PIN.</div>' % e(card))
     err = '<p class="err">%s</p>' % e(error) if error else ""
     return """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Murmuration</title>
 <style>body{font-family:sans-serif;max-width:520px;margin:16px auto;padding:0 16px;background:#111;color:#eee}
 input,textarea,select,button{width:100%%;font-size:18px;margin:6px 0;padding:8px;box-sizing:border-box}
 button{background:#2a7;color:#fff;border:0}.err{color:#f66}
-.got{background:#253;padding:12px;margin:12px 0;font-size:18px}.got span{display:block;font-size:56px;font-weight:bold}
-</style></head><body>%s%s<h2>Send a distress message</h2>
+.got{background:#253;padding:12px;margin:12px 0;font-size:18px}.got span{display:block;font-size:56px;font-weight:bold}</style></head><body>%s%s<h2>Send a distress message</h2>
 <p>It gets locked with a secret PIN nobody knows. The swarm has to crack it to read it.</p>
 <form method="post" action="/add">
 <input name="name" maxlength="%d" placeholder="Your name" required>
@@ -207,16 +225,17 @@ button{background:#2a7;color:#fff;border:0}.err{color:#f66}
         got, err, MAX_NAME, MAX_MESSAGE, opts, len(cards), rows)
 
 
-def serve(port, config_path):
+def serve(port, config_path, spot_node="webcam"):
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from core.net import load_config
-    from sim.live_locks import LiveLocks, ctl_targets, send_all
+    from sim.live_locks import LiveLocks, ctl_targets, send_all, submit
 
     with open(BEACONS) as f:
         preset = json.load(f)
     live = LiveLocks(LIVE_STATE, int(preset["rounds"]), taken=preset["beacons"], answers=ANSWERS)
-    targets = ctl_targets(load_config(config_path))
+    config = load_config(config_path)
+    targets = ctl_targets(config)
     mutex = threading.Lock()
 
     def cards():
@@ -259,12 +278,10 @@ def serve(port, config_path):
             where = "/?err=Please+type+a+message"
             if entry and self.path == "/add":
                 try:
-                    with mutex:
-                        cid, _, _ = live.add(*entry)
-                        msg = live.lock_message(cid)
-                    send_all([msg], targets, repeat=3)
-                    print("live card #%s for %s (%s) sent to %d nodes"
-                          % (cid, entry[0], entry[2], len(targets)), flush=True)
+                    with mutex:            # lock -> every node, then 'spotted' -> webcam
+                        cid = submit(live, entry, config, spot_node=spot_node)
+                    print("live card #%s for %s (%s): lock sent to %d nodes, spotted by %s"
+                          % (cid, entry[0], entry[2], len(targets), spot_node), flush=True)
                     where = "/?card=%s" % cid
                 except ValueError as ex:
                     where = "/?err=" + quote_plus(str(ex))
@@ -275,23 +292,38 @@ def serve(port, config_path):
         def log_message(self, *a):
             pass
 
-    print("card maker (live judge cards) on http://0.0.0.0:%d  phones: http://192.168.137.1:%d"
-          % (port, port))
+    print("card maker: judges type on this laptop at  http://localhost:%d" % port)
     print("locks go to: %s" % ", ".join("%s:%d" % t for t in targets), flush=True)
     ThreadingHTTPServer(("", port), H).serve_forever()
 
 
+def fresh(path=None):
+    """Forget all live card numbers (start again at #100). -> True if something was deleted.
+    Afterwards RESTART every node so they forget the old live locks too."""
+    path = path or LIVE_STATE
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["serve", "make"])
+    ap.add_argument("cmd", choices=["serve", "make", "fresh"])
     ap.add_argument("file", nargs="?", help="entries file for 'make'")
     ap.add_argument("--start", type=int, default=200, help="first card id for file-made cards")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--spot-node", default="webcam",
+                    help="node that 'spots' typed messages (the camera node on this laptop)")
     ap.add_argument("--config", default=os.path.join(ROOT, "config.json"),
                     help="where to send live locks (every node's ctl port)")
     a = ap.parse_args()
+    if a.cmd == "fresh":
+        print("live cards reset: next judge card is #100" if fresh() else "nothing to reset")
+        print("NOW restart every node (Pi, UNO Q services, webcam, Nicla) so they forget old locks")
+        return
     if a.cmd == "serve":
-        serve(a.port, a.config)
+        serve(a.port, a.config, a.spot_node)
     else:
         if not a.file:
             raise SystemExit("usage: card_maker.py make entries.txt")

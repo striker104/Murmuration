@@ -110,6 +110,14 @@ class Runner:
         with self.lock:
             return self.node.spot(tag_id, time.monotonic())
 
+    def spot_live(self, tag_id, lock):
+        """Camera scanned a judge QR (SPEC §12): learn its lock, then spot the card."""
+        with self.lock:
+            now = time.monotonic()
+            self.node.on_control({"type": "ctl", "cmd": "lock", "id": str(tag_id), "lock": lock},
+                                 now)
+            return self.node.spot(tag_id, now)
+
     def snapshot(self):
         """Copy of what the node believes, for drawing overlays."""
         with self.lock:
