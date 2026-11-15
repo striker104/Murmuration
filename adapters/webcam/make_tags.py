@@ -31,6 +31,15 @@ def labels():
         return {}
 
 
+def label_for(tid, names):
+    """Text under a tag: name + PIN length, 'LIVE judge card' for 100-199, else the number."""
+    if tid in names:
+        return "#%d  %s" % (tid, names[tid])
+    if 100 <= tid <= 199:
+        return "#%d  LIVE judge card" % tid
+    return "#%d" % tid
+
+
 def parse_grid(text):
     """'4x5' -> (4, 5); None -> default (2, 3)."""
     if not text:
@@ -52,7 +61,7 @@ def page(ids, cols=COLS, rows=ROWS):
         x = c * cell_w + (cell_w - tag) // 2
         y = r * cell_h + (cell_h - tag - label_h) // 2
         img[y:y + tag, x:x + tag] = cv2.aruco.generateImageMarker(d, tid, tag)
-        text = "#%d  %s" % (tid, names[tid]) if tid in names else "#%d" % tid
+        text = label_for(tid, names)
         s = scale
         (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, s, 2)
         while tw > cell_w - 10 and s > 0.3:          # long name: shrink to fit the cell

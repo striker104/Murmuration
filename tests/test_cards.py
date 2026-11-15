@@ -12,7 +12,7 @@ try:
 except ImportError:          # Pi / UNO Q: no OpenCV
     cv2 = None
 if cv2 is not None:
-    from adapters.webcam.make_tags import page, parse_grid   # noqa: E402
+    from adapters.webcam.make_tags import page, parse_grid, label_for   # noqa: E402
 
 
 @unittest.skipIf(cv2 is None, "needs OpenCV")
@@ -26,6 +26,12 @@ class Cards(unittest.TestCase):
         for cols, rows in [(2, 3), (3, 4), (4, 5), (5, 7)]:
             ids = list(range(100, 100 + cols * rows))
             self.assertEqual(self.detect(page(ids, cols, rows)), ids, (cols, rows))
+
+    def test_labels(self):
+        names = {3: "Jonas  5-digit PIN"}
+        self.assertEqual(label_for(3, names), "#3  Jonas  5-digit PIN")
+        self.assertEqual(label_for(104, names), "#104  LIVE judge card")
+        self.assertEqual(label_for(50, {}), "#50")
 
     def test_parse_grid(self):
         self.assertEqual(parse_grid("4x5"), (4, 5))
