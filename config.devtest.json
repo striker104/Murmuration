@@ -1,9 +1,37 @@
 {
+  "work": "decode",
   "nodes": {
-    "webcam": {"ip": "192.168.137.1",   "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": "A"},
-    "nicla":  {"ip": "192.168.137.22" , "gossip_port": 5005, "ctl_port": 5007, "speed": 0.05, "zone": "B"},
-    "unoq":   {"ip": "192.168.137.54",  "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": null},
-    "pi":     {"ip": "192.168.137.55",  "gossip_port": 5005, "ctl_port": 5007, "speed": 0.08, "zone": null}
+    "webcam": {
+      "ip": "192.168.137.1",
+      "gossip_port": 5005,
+      "ctl_port": 5007,
+      "speed": 0.12,
+      "zone": "A"
+    },
+    "nicla": {
+      "ip": "192.168.137.22",
+      "gossip_port": 5005,
+      "ctl_port": 5007,
+      "speed": 0.05,
+      "zone": "B"
+    },
+    "unoq": {
+      "ip": "192.168.137.54",
+      "gossip_port": 5005,
+      "ctl_port": 5007,
+      "speed": 0.12,
+      "zone": null
+    },
+    "pi": {
+      "ip": "192.168.137.55",
+      "gossip_port": 5005,
+      "ctl_port": 5007,
+      "speed": 0.08,
+      "zone": null
+    }
   },
-  "dashboard": {"ip": "192.168.137.1", "telemetry_port": 5006}
+  "dashboard": {
+    "ip": "192.168.137.1",
+    "telemetry_port": 5006
+  }
 }
