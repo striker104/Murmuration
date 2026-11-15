@@ -4,154 +4,388 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Murmuration</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 44'%3E%3Crect width='64' height='44' rx='8' fill='%2304060a'/%3E%3Cg fill='%234ea1ff'%3E%3Cpath d='M6 30l7-3-2 6zM15 22l7-3-2 6zM17 33l7-3-2 6zM25 14l7-3-2 6zM27 25l7-3-2 6zM36 9l7-3-2 6zM37 19l7-3-2 6zM39 30l7-3-2 6zM47 13l7-3-2 6zM49 24l7-3-2 6zM56 7l6-3-2 6z'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root {
-    --bg: #0e1116; --panel: #171b22; --panel2: #1f242d; --line: #2b323d;
-    --text: #e8ecf1; --dim: #8b95a3;
+    --bg: #04060a; --panel: #0a101b; --panel2: #070b13; --line: #142238; --edge: #1d3558;
+    --text: #e6edf7; --dim: #6f8099; --accent: #4ea1ff;
     --ok: #3fb950; --warn: #e3b341; --bad: #f0683c; --dead: #6b7480;
-    --n0: #58a6ff; --n1: #c58af9; --n2: #39c5bb; --n3: #f2a04a;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.4 system-ui, "Segoe UI", sans-serif; padding: 16px 20px 24px; }
-  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
-  h1 { margin: 0; font-size: 26px; letter-spacing: .5px; }
-  header .sub { color: var(--dim); }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  header svg { width: 58px; height: 40px; }
+  h1 { margin: 0; font-size: 26px; font-weight: 650; letter-spacing: .2px; }
+  header .sub { color: var(--dim); font-size: 13.5px; }
   #offline { display: none; margin-left: auto; background: var(--bad); color: #000; font-weight: 700;
              padding: 3px 10px; border-radius: 6px; }
 
-  .score { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
-  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+  .panel { background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line);
+           border-radius: 14px; padding: 12px 16px; }
+  .ptitle { font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  .top { display: grid; grid-template-columns: minmax(360px, 440px) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
+  .side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+  /* ---- network map */
+  #headline { font-weight: 700; font-size: 16px; padding: 6px 10px; border-radius: 8px; border-left: 4px solid var(--dead);
+              background: var(--bg); min-height: 34px; }
+  #headline.ok { border-left-color: var(--ok); }
+  #headline.warn { border-left-color: var(--warn); }
+  #headline.bad { border-left-color: var(--bad); }
+  #headline small { display: block; font-weight: 400; color: var(--dim); font-size: 12.5px; }
+  #net { display: block; width: 100%; height: auto; margin-top: 4px; }
+  .link { stroke: var(--line); stroke-width: 2; fill: none; }
+  .link.live { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 3 9; stroke-linecap: round;
+               animation: flow .7s linear infinite; }
+  .link.live.lossy { stroke-dasharray: 3 9 3 33; opacity: .75; animation: flow-lossy 1.4s linear infinite; }
+  .link.oneway { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 2 6; }
+  .link.cut { stroke: var(--bad); stroke-width: 2; stroke-dasharray: 7 6; opacity: .8; }
+  .link.silent { stroke: var(--dead); stroke-width: 1.5; stroke-dasharray: 1 7; opacity: .7; }
+  @keyframes flow { to { stroke-dashoffset: -24; } }
+  @keyframes flow-lossy { to { stroke-dashoffset: -48; } }
+  .rail { stroke: var(--line); stroke-width: 6; opacity: .5; }
+  .cutmark { fill: var(--bad); font-size: 17px; font-weight: 800; text-anchor: middle; dominant-baseline: central;
+             paint-order: stroke; stroke: var(--panel); stroke-width: 5px; }
+  .halo { fill: none; stroke-width: 3; stroke: var(--dead); }
+  .disc { fill: var(--panel2); stroke: var(--bg); stroke-width: 6; }
+  .ring { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .3s linear; }
+  .ntext { fill: var(--text); font-weight: 700; font-size: 15px; text-anchor: middle; dominant-baseline: central; }
+  .nname { fill: var(--text); font-weight: 700; font-size: 14px; text-anchor: middle; }
+  .nmode { fill: var(--dim); font-size: 12px; text-anchor: middle; letter-spacing: .4px; }
+  .gnode.connected .halo { stroke: var(--ok); }
+  .gnode.isolated .halo { stroke: var(--warn); }
+  .gnode.alone_long .halo { stroke: var(--bad); }
+  .gnode.crashed .halo, .gnode.stale .halo { stroke: var(--dead); stroke-dasharray: 4 5; }
+  .gnode.crashed .disc, .gnode.stale .disc { opacity: .45; }
+  .gnode.crashed .ntext, .gnode.stale .ntext { fill: var(--dead); }
+  .gnode.stale .nmode { fill: var(--bad); font-weight: 700; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--dim); font-size: 12px; padding: 2px 4px 0; }
+  .legend i { display: inline-block; width: 22px; height: 0; border-top: 3px dotted var(--accent); vertical-align: middle; margin-right: 5px; }
+  .legend i.cut { border-top: 2px dashed var(--bad); }
+  .legend i.oneway { border-top: 2px dotted var(--warn); }
+  .legend i.silent { border-top: 2px dotted var(--dead); }
+
+  /* ---- scoreboard */
+  .score { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .tile .label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; }
   .tile .value { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .tile .hint { color: var(--dim); font-size: 12px; min-height: 17px; }
 
-  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
-  button, select { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line);
-                   border-radius: 8px; padding: 7px 12px; }
-  button { cursor: pointer; font-weight: 600; }
-  button:hover { border-color: var(--dim); }
+  /* ---- control panel */
+  button, select { font: inherit; color: #d6e6ff; }
+  button { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600;
+           background: #0b1422; border: 1px solid var(--edge); border-radius: 10px; padding: 8px 13px;
+           box-shadow: inset 0 1px 0 rgba(120, 170, 255, .07); transition: border-color .15s, box-shadow .15s, color .15s; }
+  button:hover, button:focus-visible { border-color: var(--accent); color: #fff; outline: none;
+           box-shadow: 0 0 0 3px rgba(78, 161, 255, .16), inset 0 1px 0 rgba(120, 170, 255, .1); }
   button:active { transform: translateY(1px); }
-  button.heal { background: #1f6f33; border-color: #2c8a43; }
-  button.danger { color: #ffb4a0; }
-  .group { display: flex; gap: 6px; align-items: center; padding-left: 10px; border-left: 1px solid var(--line); }
-  .group span { color: var(--dim); }
+  button svg { width: 16px; height: 16px; flex: none; stroke: var(--accent); fill: none; stroke-width: 1.8;
+               stroke-linecap: round; stroke-linejoin: round; }
+  button small { font-weight: 500; color: var(--dim); font-size: 12px; }
+  button.primary { background: linear-gradient(180deg, #3b8cff, #1f6fe5); border-color: #5aa2ff; color: #fff;
+                   box-shadow: 0 4px 18px rgba(47, 129, 247, .35), inset 0 1px 0 rgba(255, 255, 255, .25); }
+  button.primary svg { stroke: #fff; }
+  button.ghost { background: transparent; border-color: var(--line); color: #8fa3bf; }
+  button.ghost svg { stroke: #8fa3bf; }
+  button.sm { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+  select { background: var(--bg); border: 1px solid var(--edge); border-radius: 8px; padding: 6px 9px; font-weight: 600; }
+  .groups { display: grid; grid-template-columns: 1.7fr 1fr 1fr; gap: 16px; margin-top: 10px; }
+  .grp h4 { margin: 0 0 7px; font-size: 12px; font-weight: 600; color: var(--dim); letter-spacing: .3px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .cut { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 9px; padding-top: 9px;
+         border-top: 1px solid var(--line); color: #8fa3bf; font-size: 13.5px; }
+  #events { color: var(--dim); font-size: 13px; max-height: 40px; overflow: hidden; padding: 0 4px; }
+  #events b { color: var(--text); font-weight: 600; }
 
-  .cols { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: start; }
-  .col { background: var(--panel); border: 1px solid var(--line); border-top: 4px solid var(--dead);
-         border-radius: 10px; padding: 12px; min-height: 260px; position: relative; }
+  /* ---- rescue timeline */
+  #timeline { position: relative; margin-bottom: 12px; padding-bottom: 10px; }
+  .tl-head { display: flex; align-items: center; margin-bottom: 4px; min-height: 28px; }
+  #tl-live { margin-left: auto; }
+  #tl-grid { display: grid; grid-template-columns: 172px minmax(0, 1fr) 64px; }
+  #tl-scroll { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: var(--edge) var(--bg); }
+  #tl-scroll::-webkit-scrollbar { height: 10px; }
+  #tl-scroll::-webkit-scrollbar-track { background: var(--bg); border-radius: 5px; }
+  #tl-scroll::-webkit-scrollbar-thumb { background: var(--edge); border-radius: 5px; }
+  #tl-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+  #tl-svg { display: block; }
+  #tl-svg text { font-family: system-ui, "Segoe UI", sans-serif; }
+  .tl-pad { height: 34px; color: var(--dim); font-size: 12px; letter-spacing: .8px; text-align: right; padding-top: 12px; }
+  .tl-lane { height: 58px; display: flex; flex-direction: column; justify-content: center; gap: 5px; border-top: 1px solid var(--line); }
+  .tl-name { font-size: 16px; font-weight: 700; }
+  .tl-name small { font-size: 12px; font-weight: 400; color: var(--dim); margin-left: 6px; }
+  .tl-speed { display: flex; align-items: center; gap: 7px; color: #8fa3bf; font-size: 12px; }
+  .meter { width: 70px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .meter i { display: block; height: 100%; border-radius: 3px; }
+  .tl-count { height: 58px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: flex-end;
+              font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tl-key { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--dim); font-size: 12.5px; margin-top: 8px; }
+  .tl-key b { color: var(--text); font-weight: 600; }
+  #tl-missing { display: none; color: var(--dim); padding: 18px 0; text-align: center; }
+  #tl-tip { display: none; position: absolute; z-index: 5; pointer-events: none; background: #0b1422; border: 1px solid var(--accent);
+            border-radius: 8px; padding: 5px 10px; font-size: 13px; white-space: nowrap; box-shadow: 0 6px 20px rgba(0, 0, 0, .6); }
+
+  /* ---- one column per node (what each node believes) */
+  .cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .col { background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line);
+         border-top: 3px solid var(--dead); border-radius: 12px; padding: 10px 12px; min-height: 150px; }
   .col.connected { border-top-color: var(--ok); }
   .col.isolated { border-top-color: var(--warn); }
   .col.alone_long { border-top-color: var(--bad); }
-  .col.crashed { border-top-color: var(--dead); }
   .col.stale .body, .col.crashed .body { opacity: .4; }
   .head { display: flex; align-items: center; gap: 8px; }
-  .name { font-size: 20px; font-weight: 700; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; }
-  .badge { margin-left: auto; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 99px;
+  .name { font-size: 18px; font-weight: 700; }
+  .badge { margin-left: auto; font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 99px;
            background: var(--dead); color: #000; white-space: nowrap; }
   .connected .badge { background: var(--ok); }
   .isolated .badge { background: var(--warn); }
   .alone_long .badge { background: var(--bad); }
   .stale .badge { background: #000; color: var(--bad); border: 1px solid var(--bad); }
-  .meta { color: var(--dim); font-size: 12.5px; margin: 6px 0 8px; min-height: 36px; }
-  .meta b { color: var(--text); font-weight: 600; }
-  .colbtns { display: flex; gap: 6px; margin-bottom: 10px; }
-  .colbtns button { padding: 4px 10px; font-size: 13px; }
-  .empty { color: var(--dim); padding: 18px 0; text-align: center; }
+  .meta { color: var(--dim); font-size: 12.5px; margin: 4px 0 6px; }
+  .meta b { color: var(--warn); }
+  .peers { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; min-height: 22px; }
+  .peer { font-size: 12px; font-weight: 600; padding: 0 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--dim); }
+  .peer.hears { border-color: var(--accent); color: var(--accent); }
+  .peer.blocked { border-color: var(--bad); color: var(--bad); text-decoration: line-through; }
+  .colbtns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .empty { color: var(--dim); padding: 14px 0; text-align: center; }
 
-  .job { background: var(--panel2); border: 1px solid transparent; border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; }
-  .job.mine { border-color: var(--text); }
-  .job.done { opacity: .55; }
-  .jtop { display: flex; align-items: center; gap: 7px; font-size: 13px; }
-  .jid { font-weight: 700; font-size: 16px; min-width: 34px; }
-  .tag { color: var(--dim); font-size: 11.5px; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
-  .tag.hot { color: var(--warn); border-color: var(--warn); }
-  .owner { margin-left: auto; font-weight: 600; }
-  .bar { height: 8px; background: #0b0d11; border-radius: 4px; margin-top: 6px; overflow: hidden; }
-  .bar div { height: 100%; border-radius: 4px; }
-  .pct { font-variant-numeric: tabular-nums; color: var(--dim); min-width: 38px; text-align: right; }
+  .job { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; font-size: 13px; padding: 4px 7px;
+         border: 1px solid transparent; border-radius: 7px; background: var(--bg); margin-bottom: 4px; }
+  .job.mine { border-color: var(--edge); }
+  .job.done { opacity: .5; }
+  .chip { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .jid { font-weight: 700; font-size: 14.5px; min-width: 30px; }
+  .tag { color: var(--warn); font-size: 12px; border: 1px solid var(--warn); border-radius: 5px; padding: 0 5px; white-space: nowrap; }
+  .owner { margin-left: auto; font-weight: 600; white-space: nowrap; color: #b9c8dd; }
+  .pct { font-variant-numeric: tabular-nums; color: var(--dim); min-width: 36px; text-align: right; }
+  .bar { flex-basis: 100%; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .bar div { height: 100%; border-radius: 2px; }
 
-  #events { margin-top: 14px; color: var(--dim); font-size: 13px; }
-  #events b { color: var(--text); font-weight: 600; }
-  @media (max-width: 900px) { .cols, .score { grid-template-columns: repeat(2, 1fr); } }
+  /* ---- decode mode: PIN being tried, unlocked messages */
+  .crack { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 6px 10px; min-height: 46px;
+           background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  .crack:empty { display: none; }
+  .digits { font: 700 28px/1 ui-monospace, Consolas, "Courier New", monospace; letter-spacing: 3px; color: var(--accent); }
+  .digits.off { font-size: 15px; letter-spacing: 1px; color: var(--dead); }
+  .crack .what { color: var(--dim); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crack .rate { margin-left: auto; color: #8fa3bf; font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .jtitle { color: #b9c8dd; }
+  .job.solved { opacity: 1; }
+  .pin { font-family: ui-monospace, Consolas, "Courier New", monospace; font-weight: 700; color: var(--ok); letter-spacing: 1px; }
+  .unsolved { color: var(--warn); }
+  .msg { flex-basis: 100%; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg.bad { color: var(--warn); }
+  #decoded { display: none; margin-bottom: 12px; }
+  #dcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 10px; margin-top: 8px; }
+  #dcards .empty { grid-column: 1 / -1; }
+  .dcard { background: var(--bg); border: 1px solid var(--line); border-left: 4px solid var(--dead); border-radius: 10px; padding: 8px 12px; }
+  .dhead { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+  .dhead b { font-size: 16px; }
+  .dhead .when { margin-left: auto; color: var(--dim); font-size: 12px; }
+  .dmsg { margin-top: 3px; font-size: 14.5px; }
+  .dmsg.bad { color: var(--warn); }
+
+  @media (max-width: 1100px) { .top { grid-template-columns: 1fr; } .groups { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .cols, .score { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (prefers-reduced-motion: reduce) { .link.live { animation: none; } }
 </style>
 </head>
 <body>
 <header>
+  <svg viewBox="0 0 64 44" role="img" aria-label="Murmuration logo: a small swarm">
+    <g fill="#4ea1ff">
+      <path d="M6 30l7-3-2 6z" opacity=".55"/><path d="M15 22l7-3-2 6z" opacity=".8"/><path d="M17 33l7-3-2 6z" opacity=".5"/>
+      <path d="M25 14l7-3-2 6z"/><path d="M27 25l7-3-2 6z" fill="#9cc8ff"/><path d="M36 9l7-3-2 6z" opacity=".8"/>
+      <path d="M37 19l7-3-2 6z" fill="#e6edf7"/><path d="M39 30l7-3-2 6z" opacity=".55"/><path d="M47 13l7-3-2 6z" fill="#9cc8ff"/>
+      <path d="M49 24l7-3-2 6z" opacity=".7"/><path d="M56 7l6-3-2 6z" opacity=".45"/>
+    </g>
+  </svg>
   <h1>Murmuration</h1>
-  <span class="sub">four devices, no boss &mdash; each column is what that node believes right now</span>
+  <span class="sub">four devices, no boss</span>
   <span id="offline">DASHBOARD SERVER UNREACHABLE</span>
 </header>
 
-<section class="score">
-  <div class="tile"><div class="label">People rescued</div><div class="value" id="s-rescued">&ndash;</div><div class="hint" id="s-rescued-hint"></div></div>
-  <div class="tile"><div class="label">Urgent first</div><div class="value" id="s-urgent">&ndash;</div><div class="hint" id="s-urgent-hint"></div></div>
-  <div class="tile"><div class="label">Duplicate effort</div><div class="value" id="s-dup">&ndash;</div><div class="hint">jobs worked on by more than one node</div></div>
-  <div class="tile"><div class="label">Time to agree after heal</div><div class="value" id="s-agree">&ndash;</div><div class="hint" id="s-agree-hint"></div></div>
+<section class="top">
+  <div class="panel map">
+    <div id="headline">Waiting for nodes&hellip;</div>
+    <svg id="net" viewBox="0 0 440 262" role="img" aria-label="Which nodes can talk to each other"></svg>
+    <div class="legend">
+      <span><i></i>talking (gaps = packet loss)</span><span><i class="cut"></i>cut on purpose</span>
+      <span><i class="oneway"></i>one-way</span><span><i class="silent"></i>silent</span>
+      <span>ring = current rescue</span>
+    </div>
+  </div>
+  <div class="side">
+    <div class="score">
+      <div class="panel tile"><div class="label">People rescued</div><div class="value" id="s-rescued">&ndash;</div><div class="hint" id="s-rescued-hint"></div></div>
+      <div class="panel tile"><div class="label">Urgent first</div><div class="value" id="s-urgent">&ndash;</div><div class="hint" id="s-urgent-hint"></div></div>
+      <div class="panel tile"><div class="label">Duplicate effort</div><div class="value" id="s-dup">&ndash;</div><div class="hint">jobs worked on by more than one node</div></div>
+      <div class="panel tile"><div class="label">Time to agree after heal</div><div class="value" id="s-agree">&ndash;</div><div class="hint" id="s-agree-hint"></div></div>
+    </div>
+    <div class="panel">
+      <div class="ptitle">Simulate a failure</div>
+      <div class="groups">
+        <div class="grp">
+          <h4>Network</h4>
+          <div class="row">
+            <button data-s="wifi_down"><svg viewBox="0 0 16 16"><path d="M2 6c3.500-3 8.500-3 12 0M4.500 8.500c2-1.700 5-1.700 7 0M8 12h.01M2 2l12 12"/></svg>Take Wi-Fi down</button>
+            <button data-s="split" id="b-split"><svg viewBox="0 0 16 16"><path d="M8 2v12M3 5L1.500 8 3 11M13 5l1.500 3L13 11"/></svg>Split the team <small id="split-cap"></small></button>
+            <button data-s="flaky"><svg viewBox="0 0 16 16"><path d="M2 8h2M6.500 8h1M10 8h1M13.500 8h.500M2 4h12M2 12h12"/></svg>Drop 30% of messages</button>
+          </div>
+          <div class="cut">
+            Cut the link between <select id="cut-x" aria-label="first node"></select> and
+            <select id="cut-y" aria-label="second node"></select>
+            <button class="sm" id="b-cut"><svg viewBox="0 0 16 16"><circle cx="4" cy="4.500" r="2"/><circle cx="4" cy="11.500" r="2"/><path d="M5.700 5.700L14 12M5.700 10.300L14 4"/></svg>Cut link</button>
+          </div>
+        </div>
+        <div class="grp">
+          <h4>Cameras</h4>
+          <div class="row">
+            <button data-s="cameras_blind"><svg viewBox="0 0 16 16"><path d="M1.500 8s2.500-4.500 6.500-4.500S14.500 8 14.500 8 12 12.500 8 12.500 1.500 8 1.500 8zM2 2l12 12"/></svg>Blind both cameras</button>
+          </div>
+        </div>
+        <div class="grp">
+          <h4>Recover</h4>
+          <div class="row">
+            <button class="primary" data-s="heal"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>Heal everything</button>
+            <button class="ghost" data-s="reset"><svg viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.600-3.700M3 2.500v2.800h2.800"/></svg>Reset the round</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="events"></div>
+  </div>
 </section>
 
-<section class="controls">
-  <button class="heal" data-s="heal">Heal all</button>
-  <button class="danger" data-s="wifi_down">WiFi down</button>
-  <button class="danger" data-s="split" id="b-split">Split</button>
-  <button class="danger" data-s="cameras_blind">Cameras blind</button>
-  <button class="danger" data-s="flaky">Flaky 30%</button>
-  <div class="group">
-    <span>Cut link</span><select id="cut-x"></select><span>&ndash;</span><select id="cut-y"></select>
-    <button class="danger" id="b-cut">Cut</button>
+<section id="timeline" class="panel">
+  <div class="tl-head">
+    <span class="ptitle">Rescue timeline</span>
+    <button class="sm" id="tl-live" style="visibility:hidden">Live &#9656;</button>
   </div>
-  <div class="group"><button data-s="reset">Reset round</button></div>
+  <div id="tl-missing">timeline unavailable</div>
+  <div id="tl-grid">
+    <div id="tl-labels"></div>
+    <div id="tl-scroll"><svg id="tl-svg" role="img" aria-label="Which node worked on which rescue, over time"></svg></div>
+    <div id="tl-counts"></div>
+  </div>
+  <div class="tl-key">
+    <span><b>One colour per job</b></span><span><b>&#10003;</b> rescued</span>
+    <span><b>Faded bar</b> = left unfinished</span><span><b>Arrow</b> = who picked it up</span>
+    <span><b>Speed bar</b> = how fast that device rescues</span>
+  </div>
+  <div id="tl-tip"></div>
+</section>
+
+<section id="decoded" class="panel">
+  <span class="ptitle">Decoded messages</span>
+  <div id="dcards"></div>
 </section>
 
 <section class="cols" id="cols"></section>
-<div id="events"></div>
 
 <script>
-const COLORS = ["var(--n0)", "var(--n1)", "var(--n2)", "var(--n3)"];
+// One colour per job, handed out by the server in the order jobs first appear in a round.
+const JOB_COLORS = ["#4c9aff", "#ff9838", "#36d07f", "#f2555a", "#a98bff", "#ffd638",
+                    "#ff7ac8", "#1fc8e3", "#b8794e", "#dfe5ec", "#a3b545", "#b0527a"];
 const MODE_LABEL = {connected: "CONNECTED", isolated: "ISOLATED", alone_long: "ALONE (taking any job)", crashed: "CRASHED"};
-let order = null, color = {}, cols = {};
+const MODE_SHORT = {connected: "connected", isolated: "isolated", alone_long: "alone - takes any job", crashed: "crashed"};
+const SVG = "http://www.w3.org/2000/svg";
+const R = 26, RING = 2 * Math.PI * R;
+let order = null, cols = {}, graph = {nodes: {}, links: []};
 
 function esc(v) {
   return String(v).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 }
 function $(id) { return document.getElementById(id); }
+function svg(tag, attrs, parent, text) {
+  const el = document.createElementNS(SVG, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  if (text != null) el.textContent = text;
+  if (parent) parent.appendChild(el);
+  return el;
+}
+function jobColor(state, id) {
+  const c = state && state.timeline && state.timeline.colors;
+  const i = c ? c[id] : null;
+  return i == null ? "var(--dead)" : JOB_COLORS[i % JOB_COLORS.length];
+}
 
 function post(name, params) {
   return fetch("/scenario/" + name, {method: "POST", headers: {"Content-Type": "application/json"},
                                      body: JSON.stringify(params || {})})
     .then(r => r.json()).then(r => { if (!r.ok) alert(r.error); }).catch(() => {});
 }
-
 document.querySelectorAll("button[data-s]").forEach(b => b.onclick = () => post(b.dataset.s));
 $("b-cut").onclick = () => post("cut", {x: $("cut-x").value, y: $("cut-y").value});
+
+// ---------------------------------------------------------------- build once
+
+function positions(names) {
+  // 4 nodes: corners, in config order (left column / right column = the two Split halves).
+  if (names.length === 4) return [[95, 74], [345, 74], [95, 188], [345, 188]];
+  return names.map((_, i) => {
+    const a = -Math.PI / 2 + i * 2 * Math.PI / names.length;
+    return [220 + 140 * Math.cos(a), 131 + 78 * Math.sin(a)];
+  });
+}
+
+function buildGraph(state) {
+  const net = $("net"), pos = positions(order);
+  net.innerHTML = "";
+  const linkLayer = svg("g", {}, net), nodeLayer = svg("g", {}, net);
+  for (let i = 0; i < order.length; i++) {
+    for (let j = i + 1; j < order.length; j++) {
+      const [x1, y1] = pos[i], [x2, y2] = pos[j];
+      svg("line", {x1, y1, x2, y2, class: "rail"}, linkLayer);
+      const line = svg("line", {x1, y1, x2, y2, class: "link"}, linkLayer);
+      const title = svg("title", {}, line);
+      const mark = svg("text", {x: x1 + (x2 - x1) * 0.36, y: y1 + (y2 - y1) * 0.36, class: "cutmark"}, linkLayer);
+      graph.links.push({a: order[i], b: order[j], line, title, mark});
+    }
+  }
+  order.forEach((name, i) => {
+    const [x, y] = pos[i], top = y < 131;
+    const g = svg("g", {class: "gnode"}, nodeLayer);
+    svg("circle", {cx: x, cy: y, r: R + 8, class: "halo"}, g);
+    svg("circle", {cx: x, cy: y, r: R, class: "disc"}, g);
+    const ring = svg("circle", {cx: x, cy: y, r: R, class: "ring", stroke: "var(--dead)",
+                                "stroke-dasharray": RING, "stroke-dashoffset": RING,
+                                transform: "rotate(-90 " + x + " " + y + ")"}, g);
+    const text = svg("text", {x, y, class: "ntext"}, g);
+    const label = svg("text", {x, y: top ? y - 54 : y + 50, class: "nname"}, g);
+    label.textContent = name + (state.nodes[name].zone ? "  (camera " + state.nodes[name].zone + ")" : "");
+    const mode = svg("text", {x, y: top ? y - 40 : y + 64, class: "nmode"}, g);
+    graph.nodes[name] = {g, ring, text, mode};
+  });
+}
 
 function build(state) {
   order = state.order;
   const wrap = $("cols");
   wrap.innerHTML = "";
-  order.forEach((name, i) => {
-    color[name] = COLORS[i % COLORS.length];
+  order.forEach(name => {
     const info = state.nodes[name];
     const el = document.createElement("div");
     el.className = "col";
     el.innerHTML =
-      '<div class="head"><span class="dot" style="background:' + color[name] + '"></span>' +
-      '<span class="name">' + esc(name) + '</span><span class="badge"></span></div>' +
-      '<div class="meta"></div><div class="colbtns"></div><div class="body"></div>';
+      '<div class="head"><span class="name">' + esc(name) + '</span><span class="badge"></span></div>' +
+      '<div class="meta"></div><div class="peers"></div><div class="crack"></div><div class="colbtns"></div><div class="body"></div>';
     const btns = el.querySelector(".colbtns");
     const crash = document.createElement("button");
+    crash.className = "sm";
     crash.onclick = () => post(crash.dataset.s, {x: name});
     btns.appendChild(crash);
     let blind = null;
     if (info.zone) {
       blind = document.createElement("button");
+      blind.className = "sm";
       blind.onclick = () => post(blind.dataset.s, {x: name});
       btns.appendChild(blind);
     }
     wrap.appendChild(el);
     cols[name] = {el, badge: el.querySelector(".badge"), meta: el.querySelector(".meta"),
-                  body: el.querySelector(".body"), crash, blind};
+                  peers: el.querySelector(".peers"), crack: el.querySelector(".crack"), body: el.querySelector(".body"), crash, blind};
     for (const id of ["cut-x", "cut-y"]) {
       const o = document.createElement("option");
       o.value = o.textContent = name;
@@ -159,52 +393,379 @@ function build(state) {
     }
   });
   if (order.length > 1) $("cut-y").selectedIndex = 1;
-  $("b-split").textContent = "Split " + state.split.map(g => g.join("+")).join(" | ");
+  $("split-cap").textContent = state.split.map(g => g.join(" + ")).join(" | ");
+  buildGraph(state);
+  buildTimeline(state);
 }
 
-function jobRow(job, current) {
-  const pct = Math.round(Math.max(0, Math.min(1, job.progress || 0)) * 100);
-  const owner = job.owner;
-  const c = owner && color[owner] ? color[owner] : "var(--dead)";
-  let tags = '<span class="tag">zone ' + esc(job.zone == null ? "?" : job.zone) + '</span>';
-  if (job.epoch > 0) tags += '<span class="tag hot">takeover &times;' + esc(job.epoch) + '</span>';
-  if ((job.workers || []).length > 1) tags += '<span class="tag hot">' + job.workers.length + ' workers</span>';
-  return '<div class="job' + (job.done ? " done" : "") + (job.id === current ? " mine" : "") + '">' +
-    '<div class="jtop"><span class="jid">#' + esc(job.id) + '</span>' + tags +
-    '<span class="owner" style="color:' + c + '">' + (job.done ? "&#10003; rescued" : esc(owner || "unclaimed")) + '</span>' +
-    '<span class="pct">' + pct + '%</span></div>' +
-    '<div class="bar"><div style="width:' + pct + '%;background:' + c + '"></div></div></div>';
+// ---------------------------------------------------------------- network map
+
+// What each node says about itself: null telemetry / stale = we can't see it at all.
+function view(state, name) {
+  const info = state.nodes[name], t = info.telemetry;
+  const up = !!t && !info.stale && t.mode !== "crashed";
+  return {t, stale: info.stale, up,
+          hears: p => up && t.reachable.includes(p),
+          blocks: p => !!t && !info.stale && t.blocked.includes(p)};
+}
+
+function renderGraph(state) {
+  const v = {};
+  order.forEach(n => v[n] = view(state, n));
+
+  for (const l of graph.links) {
+    const a = v[l.a], b = v[l.b];
+    let cls, tip, mark = "";
+    if (a.blocks(l.b) || b.blocks(l.a)) { cls = "cut"; tip = "link cut on purpose"; mark = "✕"; }
+    else if (!a.up || !b.up) { cls = "silent"; tip = "one end is down"; }
+    else if (a.hears(l.b) && b.hears(l.a)) { cls = state.flaky > 0 ? "live lossy" : "live"; tip = "gossiping both ways"; }
+    else if (a.hears(l.b) || b.hears(l.a)) { cls = "oneway"; tip = "only one side hears the other"; }
+    else { cls = "silent"; tip = "no gossip getting through"; }
+    l.line.setAttribute("class", "link " + cls);
+    l.title.textContent = l.a + " – " + l.b + ": " + tip;
+    l.mark.textContent = mark;
+  }
+
+  for (const name of order) {
+    const n = graph.nodes[name], t = v[name].t;
+    const mode = t ? t.mode : null;
+    n.g.setAttribute("class", "gnode " + (v[name].stale ? "stale" : mode));
+    let text = "idle", frac = 0;
+    if (!t) text = "?";
+    else if (mode === "crashed") text = "✕";
+    else if (t.current != null && t.jobs[t.current]) {
+      text = "#" + t.current;
+      frac = t.jobs[t.current].progress || 0;
+      n.ring.setAttribute("stroke", jobColor(state, t.current));
+    }
+    n.text.textContent = text;
+    n.ring.setAttribute("stroke-dashoffset", RING * (1 - Math.max(0, Math.min(1, frac))));
+    n.mode.textContent = v[name].stale ? "NO SIGNAL" : (MODE_SHORT[mode] || mode) + (t.blind ? " · blind" : "");
+  }
+
+  // Plain-English headline: who can actually work together right now?
+  const up = order.filter(n => v[n].up);
+  const seen = new Set(), groups = [];
+  for (const start of up) {
+    if (seen.has(start)) continue;
+    const group = [], todo = [start];
+    seen.add(start);
+    while (todo.length) {
+      const n = todo.pop();
+      group.push(n);
+      for (const p of up) if (!seen.has(p) && v[n].hears(p) && v[p].hears(n)) { seen.add(p); todo.push(p); }
+    }
+    groups.push(order.filter(n => group.includes(n)));
+  }
+  const cut = graph.links.filter(l => v[l.a].blocks(l.b) || v[l.b].blocks(l.a)).length;
+  let head, level;
+  if (!order.some(n => v[n].t)) { head = "Waiting for nodes…"; level = ""; }
+  else if (!up.length) { head = "No node is running"; level = "bad"; }
+  else if (groups.length === 1 && up.length > 1) {
+    head = "One team: " + (up.length === order.length ? "all " + up.length : up.length + " of " + order.length) + " nodes are talking";
+    level = up.length === order.length && !cut ? "ok" : "warn";
+  }
+  else if (groups.every(g => g.length === 1)) {
+    head = up.length > 1 ? "Nobody can reach anybody — every node works alone" : up[0] + " is on its own";
+    level = "bad";
+  }
+  else { head = "Split into " + groups.length + " groups: " + groups.map(g => g.join(" + ")).join("  |  "); level = "warn"; }
+
+  const notes = [];
+  if (groups.length === 1 && cut) notes.push(cut + " link" + (cut > 1 ? "s" : "") + " cut — news hops through the others");
+  const crashed = order.filter(n => v[n].t && !v[n].stale && v[n].t.mode === "crashed");
+  const lost = order.filter(n => v[n].t && v[n].stale);
+  const blind = order.filter(n => v[n].up && v[n].t.blind);
+  if (crashed.length) notes.push(crashed.join(", ") + " crashed");
+  if (lost.length) notes.push("no signal from " + lost.join(", "));
+  if (blind.length) notes.push("blind camera: " + blind.join(", "));
+  if (state.flaky > 0) notes.push(Math.round(state.flaky * 100) + "% of gossip is being dropped");
+  if (level === "ok" && notes.length) level = "warn";
+  $("headline").className = level;
+  $("headline").innerHTML = esc(head) + (notes.length ? "<small>" + esc(notes.join(" · ")) + "</small>" : "");
+  return v;
+}
+
+// ---------------------------------------------------------------- rescue timeline
+
+const WINDOW_S = 60, LANE_H = 58, BAR_H = 32, TL_TOP = 34, AXIS_H = 22;
+let following = true;          // keep "now" in view until the user scrolls back
+let tlView = null;             // what is drawn right now, for the hover tooltip
+let beacons = {};              // card id -> {title, digits} (decode mode), from the last /state
+const tlCounts = {}, tlSpeed = {};
+
+function secs(v) { return v.toFixed(1); }
+function pct(v) { return Math.round(Math.max(0, Math.min(1, v || 0)) * 100) + "%"; }
+
+function buildTimeline(state) {
+  $("tl-labels").innerHTML = '<div class="tl-pad"></div>' + order.map(n => {
+    const info = state.nodes[n];
+    return '<div class="tl-lane"><div class="tl-name">' + esc(n) +
+      (info.zone ? "<small>camera " + esc(info.zone) + "</small>" : "") + '</div>' +
+      '<div class="tl-speed"></div></div>';
+  }).join("");
+  document.querySelectorAll("#tl-labels .tl-speed").forEach((el, i) => tlSpeed[order[i]] = el);
+  const counts = $("tl-counts");
+  counts.innerHTML = '<div class="tl-pad">RESCUED</div>';
+  order.forEach(n => {
+    const d = document.createElement("div");
+    d.className = "tl-count";
+    d.textContent = "0";
+    counts.appendChild(d);
+    tlCounts[n] = d;
+  });
+
+  const box = $("tl-scroll");
+  box.addEventListener("scroll", () => {
+    following = box.scrollLeft + box.clientWidth >= box.scrollWidth - 24;
+    $("tl-live").style.visibility = following ? "hidden" : "visible";
+  });
+  $("tl-live").onclick = () => { following = true; box.scrollLeft = box.scrollWidth; };
+  box.addEventListener("mousemove", showTip);
+  box.addEventListener("mouseleave", () => { $("tl-tip").style.display = "none"; });
+}
+
+function guessRate(state, n) {
+  const t = state.nodes[n].telemetry;
+  return t && typeof t.rate === "number" ? t.rate : null;
+}
+function isDecode(state) { return state.work === "decode" || order.some(n => guessRate(state, n) != null); }
+function num(v) { return Math.round(v).toLocaleString("en-US"); }
+function setHtml(el, html) { if (el._html !== html) { el.innerHTML = html; el._html = html; } }
+
+// Speed bar on each lane: guesses per second in decode mode, seconds per rescue in counter mode.
+function renderSpeeds(state) {
+  const decode = isDecode(state);
+  const val = n => decode ? guessRate(state, n) : state.nodes[n].speed;
+  const fastest = Math.max.apply(null, order.map(n => val(n) || 0)) || 1;
+  for (const n of order) {
+    const v = val(n), rel = (v || 0) / fastest;
+    const c = rel >= 0.999 ? "var(--ok)" : rel > (decode ? 0.2 : 0.5) ? "var(--warn)" : "var(--bad)";
+    let text = "";
+    if (decode) text = v != null ? num(v) + " guesses/s" : state.nodes[n].telemetry ? "counter mode" : "";
+    else if (v) text = (Math.round(10 / v) / 10) + " s each";
+    setHtml(tlSpeed[n], '<span class="meter"><i style="width:' + (rel > 0 ? Math.max(4, Math.round(rel * 100)) : 0) +
+      '%;background:' + c + '"></i></span><span>' + text + '</span>');
+  }
+}
+
+function showTip(e) {
+  const tip = $("tl-tip");
+  tip.style.display = "none";
+  if (!tlView) return;
+  const r = $("tl-svg").getBoundingClientRect();
+  const lane = Math.floor((e.clientY - r.top - TL_TOP) / LANE_H), t = (e.clientX - r.left) / tlView.pps;
+  const node = order[lane];
+  if (!node) return;
+  let hit = null;
+  for (const s of tlView.tl.segments) {
+    if (s.node === node && t >= s.start && t <= (s.end == null ? tlView.tl.now : s.end)) hit = s;
+  }
+  if (!hit) return;
+  const end = hit.end == null ? "now" : secs(hit.end) + " s";
+  const who = beacons[hit.job] && beacons[hit.job].title;
+  tip.textContent = "#" + hit.job + (who ? " " + who : "") + " · " + hit.node + " · " + secs(hit.start) + " s – " + end + " · " +
+    pct(hit.p0) + " → " + pct(hit.p1) + (hit.from ? " · took over from " + hit.from : "");
+  const host = $("timeline").getBoundingClientRect();
+  tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX - host.left + 12, host.width - tip.offsetWidth - 8) + "px";
+  tip.style.top = (e.clientY - host.top + 16) + "px";
+}
+
+function fits(text, width, size) { return text.length * size * 0.56 + 14 <= width; }
+
+function renderTimeline(state) {
+  const tl = state.timeline;
+  $("tl-missing").style.display = tl ? "none" : "block";
+  $("tl-grid").style.display = tl ? "grid" : "none";
+  if (!tl) { tlView = null; return; }
+
+  const box = $("tl-scroll"), s = $("tl-svg");
+  const W = box.clientWidth || 800, pps = W / WINDOW_S, now = tl.now;
+  const width = Math.max(W, Math.ceil((now + 3) * pps));
+  const H = TL_TOP + LANE_H * order.length + AXIS_H, bottom = H - AXIS_H;
+  const X = t => t * pps;
+  const laneY = {};
+  order.forEach((n, i) => laneY[n] = TL_TOP + i * LANE_H + (LANE_H - BAR_H) / 2);
+  s.setAttribute("width", width);
+  s.setAttribute("height", H);
+  s.innerHTML = "";
+  tlView = {tl, pps};
+
+  // time grid + lane lines
+  for (let t = 0; X(t) <= width; t += 5) {
+    svg("line", {x1: X(t), x2: X(t), y1: TL_TOP, y2: bottom, stroke: "#101a2b"}, s);
+    if (X(t) + 34 < X(now) || X(t) > X(now) + 34)      // keep clear of the "now" label
+      svg("text", {x: X(t) + 3, y: H - 6, fill: "#6f8099", "font-size": 12}, s, t + " s");
+  }
+  order.forEach((n, i) => svg("line", {x1: 0, x2: width, y1: TL_TOP + i * LANE_H, y2: TL_TOP + i * LANE_H, stroke: "#142238"}, s));
+
+  // takeover arrows (drawn under the bars): from the bar that was left to the bar that picked the job up
+  tl.segments.forEach((g, i) => {
+    if (!g.from || !(g.node in laneY) || !(g.from in laneY)) return;
+    let src = null;
+    for (let k = i - 1; k >= 0; k--) {
+      if (tl.segments[k].job === g.job && tl.segments[k].node === g.from) { src = tl.segments[k]; break; }
+    }
+    if (!src || (src.end != null && g.start - src.end > 15)) return;    // too far apart: the label says it
+    const c = jobColor(state, g.job), down = laneY[src.node] < laneY[g.node];
+    const sx = X(src.end == null ? g.start : Math.min(src.end, g.start)), ex = X(g.start) + 3;
+    const sy = laneY[src.node] + (down ? BAR_H : 0), ey = laneY[g.node] + (down ? -6 : BAR_H + 6);
+    const mid = (sy + ey) / 2;
+    const d = "M" + sx + " " + sy + " C " + sx + " " + mid + ", " + ex + " " + mid + ", " + ex + " " + ey;
+    svg("path", {d, fill: "none", stroke: "#04060a", "stroke-width": 6}, s);
+    svg("path", {d, fill: "none", stroke: c, "stroke-width": 2.5}, s);
+    const tipY = laneY[g.node] + (down ? 0 : BAR_H), back = down ? -8 : 8;
+    svg("path", {d: "M" + (ex - 6) + " " + (tipY + back) + " L" + ex + " " + tipY + " L" + (ex + 6) + " " + (tipY + back) + "z",
+                 fill: c, stroke: "#04060a", "stroke-width": 1}, s);
+  });
+
+  // outages: crashed / no signal
+  for (const o of tl.outages) {
+    if (!(o.node in laneY)) continue;
+    const x0 = X(o.start), w = X(o.end == null ? now : o.end) - x0, y = laneY[o.node];
+    if (w < 2) continue;
+    svg("rect", {x: x0 + 1, y, width: Math.max(1, w - 2), height: BAR_H, rx: 6, fill: "#070b13",
+                 stroke: o.kind === "crashed" ? "#6b7480" : "#f0683c", "stroke-dasharray": "4 4", opacity: .9}, s);
+    const what = o.kind === "crashed" ? "CRASHED" : "NO SIGNAL";
+    const dropped = tl.segments.find(g => g.node === o.node && g.outcome === "left" && Math.abs(g.end - o.start) < 0.01);
+    const long = dropped ? what + " · dropped #" + dropped.job + " at " + pct(dropped.p1) : what;
+    const label = fits(long, w, 12) ? long : fits(what, w, 12) ? what : null;
+    if (label) svg("text", {x: x0 + w / 2, y: y + BAR_H / 2 + 4.5, fill: "#8fa3bf", "font-size": 12, "font-weight": 600,
+                            "text-anchor": "middle"}, s, label);
+  }
+
+  // bars: one per stretch of work
+  const done = {};
+  order.forEach(n => done[n] = 0);
+  for (const g of tl.segments) {
+    if (!(g.node in laneY)) continue;
+    if (g.outcome === "done") done[g.node]++;
+    const x0 = X(g.start), w = Math.max(2, X(g.end == null ? now : g.end) - x0 - 1), y = laneY[g.node];
+    const c = jobColor(state, g.job), left = g.outcome === "left";
+    svg("rect", {x: x0 + 0.5, y, width: w, height: BAR_H, rx: Math.min(6, w / 2), fill: c, opacity: left ? .38 : .95}, s);
+    if (left) svg("rect", {x: x0 + 0.5, y, width: w, height: BAR_H, rx: Math.min(6, w / 2), fill: "none", stroke: c, "stroke-dasharray": "4 3"}, s);
+    if (g.outcome === "live" && w > 8) svg("rect", {x: x0 + w - 3.5, y, width: 4, height: BAR_H, rx: 2, fill: "#fff"}, s);
+    const tick = g.outcome === "done" ? " ✓" : "";
+    const options = [(g.from ? "#" + g.job + " ← " + g.from : "#" + g.job) + tick, "#" + g.job + tick, "#" + g.job];
+    const pad = g.from ? 14 : 8;          // leave room for the arrowhead landing on the left edge
+    const label = w >= 34 ? options.find(o => fits(o, w - pad + 8, 12.5)) : null;
+    if (label) svg("text", {x: x0 + pad, y: y + BAR_H / 2 + 4.5, fill: left ? "#e6edf7" : "#04060a", "font-size": 12.5, "font-weight": 700}, s, label);
+  }
+  order.forEach(n => tlCounts[n].textContent = done[n]);
+
+  // scenario markers (two rows so neighbours don't overlap)
+  const rowEnd = [-1e9, -1e9];
+  for (const m of tl.markers) {
+    const x = X(m.t), text = "▼ " + m.text, row = x >= rowEnd[0] ? 0 : x >= rowEnd[1] ? 1 : 0;
+    rowEnd[row] = x + text.length * 7 + 12;
+    svg("line", {x1: x, x2: x, y1: row ? 28 : 16, y2: bottom, stroke: "#4ea1ff", "stroke-dasharray": "3 4", opacity: .8}, s);
+    svg("text", {x: x - 4, y: row ? 27 : 13, fill: "#4ea1ff", "font-size": 12, "font-weight": 600}, s, text);
+  }
+
+  // now
+  svg("line", {x1: X(now), x2: X(now), y1: TL_TOP - 4, y2: bottom, stroke: "#e6edf7", "stroke-width": 1.5}, s);
+  svg("text", {x: X(now) + 5, y: H - 6, fill: "#e6edf7", "font-size": 12, "font-weight": 700}, s, "now");
+
+  if (following) box.scrollLeft = box.scrollWidth;
+  $("tl-live").style.visibility = following ? "hidden" : "visible";
+}
+
+// ---------------------------------------------------------------- columns
+
+function jobRow(state, job, current, decoding) {
+  const p = Math.round(Math.max(0, Math.min(1, job.progress || 0)) * 100);
+  const c = jobColor(state, job.id);
+  let tags = "";
+  if (job.epoch > 0) tags += '<span class="tag">takeover &times;' + esc(job.epoch) + '</span>';
+  if ((job.workers || []).length > 1) tags += '<span class="tag">' + job.workers.length + ' workers</span>';
+  const b = beacons[job.id];
+  const title = b && b.title ? '<span class="jtitle">' + esc(b.title) + '</span>' : "";
+  let owner = esc(job.owner || "unclaimed"), msg = "", solved = false;
+  if (job.done && typeof job.pin === "string") {             // decode mode: PIN found
+    solved = true;
+    owner = '&#128275; <span class="pin">' + esc(job.pin) + '</span>';
+    const d = (state.decoded || []).find(e => e.job === job.id && e.pin === job.pin);
+    if (d && d.ok) msg = '<div class="msg" title="' + esc(d.message) + '">&ldquo;' + esc(d.message) + '&rdquo;</div>';
+    else if (d) msg = '<div class="msg bad">this PIN does not unlock the message</div>';
+  }
+  else if (job.done && b && decoding) owner = '<span class="unsolved">unsolved</span>';
+  else if (job.done && b) owner = "&#10003; counted, no PIN";
+  else if (job.done) owner = "&#10003; rescued";
+  return '<div class="job' + (solved ? " solved" : job.done ? " done" : "") + (job.id === current ? " mine" : "") + '">' +
+    '<span class="chip" style="background:' + c + '"></span><span class="jid">#' + esc(job.id) + '</span>' + title + tags +
+    '<span class="owner">' + owner + '</span>' +
+    '<span class="pct">' + p + '%</span>' +
+    '<div class="bar"><div style="width:' + p + '%;background:' + c + '"></div></div>' + msg + '</div>';
+}
+
+// The PIN a node is trying right now, and how fast it guesses (decode mode only).
+function crackHtml(state, info, t) {
+  if (!t || !isDecode(state)) return "";
+  const rate = typeof t.rate === "number" ? '<span class="rate">' + num(t.rate) + ' guesses/s</span>' : "";
+  if (info.stale) return '<span class="digits off">NO SIGNAL</span>';
+  if (t.mode === "crashed") return '<span class="digits off">CRASHED</span>' + rate;
+  if (typeof t.rate !== "number")
+    return '<span class="digits off">COUNTER MODE</span><span class="what">not decoding yet</span>';
+  if (t.trying == null) return '<span class="digits off">IDLE</span>' + rate;
+  const b = t.current != null && beacons[t.current];
+  const what = t.current != null ? "trying PIN for #" + esc(t.current) + (b && b.title ? " " + esc(b.title) : "") : "trying PIN";
+  return '<span class="digits">' + esc(t.trying) + '</span><span class="what">' + what + '</span>' + rate;
+}
+
+// Strip of unlocked messages, newest first.
+function renderDecoded(state) {
+  const list = state.decoded || [];
+  $("decoded").style.display = isDecode(state) || list.length ? "block" : "none";
+  setHtml($("dcards"), list.length ? list.map(e =>
+    '<div class="dcard" style="border-left-color:' + jobColor(state, e.job) + '"><div class="dhead"><b>#' + esc(e.job) +
+    (e.title ? " " + esc(e.title) : "") + '</b><span>&#128275; <span class="pin">' + esc(e.pin) + '</span></span>' +
+    '<span class="when">at ' + secs(e.t) + ' s</span></div>' +
+    (e.ok ? '<div class="dmsg">&ldquo;' + esc(e.message) + '&rdquo;</div>'
+          : '<div class="dmsg bad">this PIN does not unlock the message</div>') + '</div>').join("")
+    : '<div class="empty">No message decoded yet. A card&rsquo;s message appears here when the swarm finds its PIN.</div>');
 }
 
 function render(state) {
   if (!order) build(state);
+  beacons = state.beacons || {};
+  const v = renderGraph(state);
+  renderTimeline(state);
+  renderSpeeds(state);
+  renderDecoded(state);
   for (const name of order) {
     const info = state.nodes[name], t = info.telemetry, col = cols[name];
     const mode = t ? t.mode : null;
     col.el.className = "col " + (info.stale ? "stale" : esc(mode));
     col.badge.textContent = info.stale ? "NO SIGNAL" : (MODE_LABEL[mode] || mode);
     const crashed = mode === "crashed";
-    col.crash.textContent = crashed ? "Revive" : "Crash";
+    col.crash.textContent = crashed ? "Revive this node" : "Crash this node";
     col.crash.dataset.s = crashed ? "revive" : "crash";
     if (col.blind) {
       const blind = t && t.blind;
-      col.blind.textContent = blind ? "Unblind camera" : "Blind camera";
+      col.blind.textContent = blind ? "Restore this camera" : "Blind this camera";
       col.blind.dataset.s = blind ? "unblind" : "blind";
     }
-    let meta = (info.zone ? "camera, zone " + esc(info.zone) : "no camera") + " &middot; " +
-               Math.round(1 / info.speed) + " s per rescue";
+    const decoding = guessRate(state, name) != null;
+    let meta = (info.zone ? "camera, zone " + esc(info.zone) : "no camera") +
+               (decoding ? "" : " &middot; " + Math.round(1 / info.speed) + " s per rescue");
+    setHtml(col.crack, crackHtml(state, info, t));
     if (!t) {
-      col.meta.innerHTML = meta + "<br>never heard from this node";
+      col.meta.innerHTML = meta + " &middot; never heard from this node";
+      col.peers.innerHTML = "";
       col.body.innerHTML = '<div class="empty">waiting for telemetry&hellip;</div>';
       continue;
     }
-    meta += "<br>hears: <b>" + (t.reachable.length ? esc(t.reachable.join(", ")) : "nobody") + "</b>";
-    if (t.blocked.length) meta += " &middot; blocked: <b>" + esc(t.blocked.join(", ")) + "</b>";
-    if (t.blind) meta += ' &middot; <b style="color:var(--warn)">BLIND</b>';
-    if (info.stale) meta += ' &middot; last heard ' + info.age.toFixed(0) + ' s ago';
+    if (t.blind) meta += " &middot; <b>BLIND</b>";
+    if (info.stale) meta += " &middot; last heard " + info.age.toFixed(0) + " s ago";
     col.meta.innerHTML = meta;
+    col.peers.innerHTML = order.filter(p => p !== name).map(p => {
+      const cls = v[name].blocks(p) ? "blocked" : v[name].hears(p) ? "hears" : "";
+      const tip = cls === "blocked" ? "blocked" : cls === "hears" ? "hears it" : "can't hear it";
+      return '<span class="peer ' + cls + '" title="' + tip + '">' + esc(p) + '</span>';
+    }).join("");
     const jobs = Object.values(t.jobs).sort((a, b) => a.sev - b.sev || (a.id < b.id ? -1 : 1));
-    col.body.innerHTML = jobs.length ? jobs.map(j => jobRow(j, t.current)).join("")
+    col.body.innerHTML = jobs.length ? jobs.map(j => jobRow(state, j, t.current, decoding)).join("")
                                      : '<div class="empty">no jobs known</div>';
   }
 
@@ -225,7 +786,7 @@ function render(state) {
     $("s-agree-hint").textContent = "columns still disagree";
   } else {
     $("s-agree").textContent = "–";
-    $("s-agree-hint").textContent = "press Heal all to measure";
+    $("s-agree-hint").textContent = "press Heal everything to measure";
   }
   $("events").innerHTML = state.events.slice().reverse()
     .map(e => esc(e.time) + " <b>" + esc(e.text) + "</b>").join(" &nbsp;&middot;&nbsp; ");

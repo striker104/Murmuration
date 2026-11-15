@@ -6,6 +6,8 @@ The dashboard is NOT a node. It only:
   - listens for telemetry (UDP) and remembers the latest message from each node
   - serves index.html and GET /state
   - turns POST /scenario/<name> into control commands (each sent 3 times, 0.1 s apart)
+  - keeps a rescue timeline (timeline.py) built from the telemetry, served in /state
+  - in decode mode, unlocks each card's message once its PIN is found (decoded.py)
 """
 import argparse
 import json
@@ -14,6 +16,9 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from decoded import Decoded, beacon
+from timeline import Timeline
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STALE_AFTER = 2.0        # no telemetry for this long -> "NO SIGNAL"
@@ -26,7 +31,21 @@ def load_config(path):
     if not os.path.exists(path):
         path = os.path.join(HERE, "..", path)      # allow running from inside dashboard/
     with open(path) as f:
-        return json.load(f)
+        cfg = json.load(f)
+    cfg["_dir"] = os.path.dirname(os.path.abspath(path))       # beacons.json lives next to the config
+    return cfg
+
+
+def load_beacons(cfg):
+    """-> (rounds, {card id: beacon}); (0, {}) in counter mode or if beacons.json can't be read."""
+    if cfg.get("work") != "decode":
+        return 0, {}
+    path = os.path.join(cfg.get("_dir", os.path.join(HERE, "..")), "beacons.json")
+    try:
+        return beacon.load_beacons(path)
+    except (OSError, ValueError, KeyError, AttributeError) as e:
+        print("decode mode but can't load %s (%s): messages will not be decoded" % (path, e))
+        return 0, {}
 
 
 # ---------------------------------------------------------------- scenarios (SPEC 9)
@@ -94,13 +113,15 @@ def build_commands(name, params, cfg):
 
 
 def describe(name, params):
+    """What a button press did, in plain English (event log + timeline markers)."""
+    x, y = params.get("x"), params.get("y")
     labels = {
-        "heal": "Heal all", "wifi_down": "WiFi down", "split": "Split", "cameras_blind": "Cameras blind",
-        "reset": "Reset round",
-        "cut": "Cut link %s - %s" % (params.get("x"), params.get("y")),
-        "blind": "Blind %s" % params.get("x"), "unblind": "Unblind %s" % params.get("x"),
-        "crash": "Crash %s" % params.get("x"), "revive": "Revive %s" % params.get("x"),
-        "flaky": "Flaky %d%%" % round(float(params.get("loss", 0.3)) * 100),
+        "heal": "Healed everything", "wifi_down": "Took Wi-Fi down", "split": "Split the team",
+        "cameras_blind": "Blinded both cameras", "reset": "Reset the round",
+        "cut": "Cut the link between %s and %s" % (x, y),
+        "blind": "Blinded %s's camera" % x, "unblind": "Restored %s's camera" % x,
+        "crash": "Crashed %s" % x, "revive": "Revived %s" % x,
+        "flaky": "Started dropping %d%% of messages" % round(float(params.get("loss", 0.3)) * 100),
     }
     return labels.get(name, name)
 
@@ -108,8 +129,9 @@ def describe(name, params):
 # ---------------------------------------------------------------- state
 
 class Dashboard:
-    def __init__(self, cfg):
+    def __init__(self, cfg, clock=time.monotonic, beacons=None):
         self.cfg = cfg
+        self.clock = clock        # OUR monotonic clock (tests pass a fake one)
         self.names = list(cfg["nodes"])
         self.lock = threading.Lock()
         self.latest = {}          # node -> last telemetry message
@@ -119,6 +141,10 @@ class Dashboard:
         self.heal_at = None
         self.agree_time = None
         self.events = []          # recent button presses, newest last
+        self.flaky = 0.0          # loss we last asked for (nodes do not report it)
+        self.round_start = self.clock()            # timeline times are seconds since this
+        self.timeline = Timeline(self.names)
+        self.decoded = Decoded(*(beacons or load_beacons(cfg)))
         self.ctl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     # ---- telemetry in
@@ -127,16 +153,31 @@ class Dashboard:
         node = msg.get("node")
         if msg.get("type") != "telemetry" or node not in self.names or not isinstance(msg.get("jobs"), dict):
             return
-        now = time.monotonic()
+        now = self.clock()
         with self.lock:
             self.latest[node] = msg
             self.heard_at[node] = now
             if now >= self.score_quiet_until:
                 for jid in sorted(msg["jobs"], key=_sev_key(msg["jobs"])):
                     job = msg["jobs"][jid]
-                    if isinstance(job, dict) and job.get("done") and jid not in self.finish_order:
+                    if isinstance(job, dict) and self._rescued(jid, job) and jid not in self.finish_order:
                         self.finish_order.append(jid)
+                try:
+                    self.timeline.on_telemetry(msg, now - self.round_start)
+                except Exception:
+                    pass           # a timeline bug must never stop telemetry (it runs the whole demo)
+                try:
+                    self.decoded.on_telemetry(msg, now - self.round_start)
+                except Exception:
+                    pass
             self._check_agreement(now)
+
+    def _rescued(self, jid, job):
+        """Done -- and for a card with a locked message, only once its PIN is found. (A node still in
+        counter mode marks such a card done without a PIN; the decoders ignore that, so do we.)"""
+        if not job.get("done"):
+            return False
+        return str(jid) not in self.decoded.beacons or isinstance(job.get("pin"), str)
 
     def _check_agreement(self, now):
         """Time to agree after heal: every live column shows the same set of done jobs."""
@@ -152,9 +193,12 @@ class Dashboard:
         if len(done_sets) == 1:
             self.agree_time = now - self.heal_at
 
-    def listen(self):
+    def open_telemetry_socket(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("0.0.0.0", self.cfg["dashboard"]["telemetry_port"]))
+        return sock
+
+    def listen(self, sock):
         while True:
             try:
                 data, _addr = sock.recvfrom(65535)     # telemetry is not chunked
@@ -168,19 +212,28 @@ class Dashboard:
 
     def run_scenario(self, name, params):
         commands = build_commands(name, params, self.cfg)
-        now = time.monotonic()
+        now = self.clock()
         with self.lock:
             if name == "heal":
                 self.heal_at = now
                 self.agree_time = None
+                self.flaky = 0.0
+            if name == "flaky":
+                self.flaky = float(params.get("loss", 0.3))
             if name == "reset":
                 self.finish_order = []
+                self.flaky = 0.0
                 self.heal_at = None
                 self.agree_time = None
                 self.score_quiet_until = now + 1.5     # nodes ignore stale gossip for 1 s; so do we
                 for msg in self.latest.values():
                     msg["jobs"] = {}
                     msg["current"] = None
+                self.timeline.reset()
+                self.decoded.reset()
+                self.round_start = now
+            else:
+                self.timeline.mark(describe(name, params), now - self.round_start)
             self.events.append({"time": time.strftime("%H:%M:%S"), "text": describe(name, params)})
             self.events = self.events[-12:]
         threading.Thread(target=self._send, args=(commands,), daemon=True).start()
@@ -200,7 +253,7 @@ class Dashboard:
     # ---- state out
 
     def state(self):
-        now = time.monotonic()
+        now = self.clock()
         with self.lock:
             nodes = {}
             for n in self.names:
@@ -212,12 +265,28 @@ class Dashboard:
                     "stale": age is None or age > STALE_AFTER,
                     "telemetry": self.latest.get(n),
                 }
+            try:
+                for n in self.names:
+                    if n in self.heard_at and nodes[n]["stale"]:
+                        self.timeline.silent(n, max(0.0, self.heard_at[n] - self.round_start))
+                timeline = self.timeline.snapshot(now - self.round_start)
+            except Exception:
+                timeline = None    # page shows "timeline unavailable", everything else still works
+            try:
+                decoded = self.decoded.snapshot()
+            except Exception:
+                decoded = []
             return {
                 "order": self.names,
                 "nodes": nodes,
                 "split": split_groups(self.cfg),
+                "flaky": self.flaky,
                 "score": self._score(now),
                 "events": list(self.events),
+                "timeline": timeline,
+                "work": "decode" if self.cfg.get("work") == "decode" else "counter",
+                "beacons": self.decoded.titles(),      # card id -> {title, digits}
+                "decoded": decoded,                    # unlocked messages, newest first
             }
 
     def _score(self, now):
@@ -229,7 +298,7 @@ class Dashboard:
                     continue
                 sev[jid] = job.get("sev", 0)
                 workers.setdefault(jid, set()).update(job.get("workers") or [])
-                if job.get("done"):
+                if self._rescued(jid, job):
                     done.add(jid)
         urgent = sorted(sev, key=lambda j: (sev[j], j))[:3]
         ranks = [self.finish_order.index(j) + 1 for j in urgent if j in self.finish_order]
@@ -307,7 +376,13 @@ def main():
 
     cfg = load_config(args.config)
     dash = Dashboard(cfg)
-    threading.Thread(target=dash.listen, daemon=True).start()
+    try:
+        sock = dash.open_telemetry_socket()
+    except OSError as e:
+        raise SystemExit("Cannot listen for telemetry on UDP port %d (%s). "
+                         "Is another dashboard already running? Stop it first."
+                         % (cfg["dashboard"]["telemetry_port"], e))
+    threading.Thread(target=dash.listen, args=(sock,), daemon=True).start()
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(dash))
     print("telemetry: UDP %d   nodes: %s" % (cfg["dashboard"]["telemetry_port"], ", ".join(dash.names)))
     print("dashboard: http://%s:%d" % (args.host, args.port))

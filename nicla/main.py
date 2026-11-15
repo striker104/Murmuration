@@ -2,6 +2,7 @@
 #
 # Copy THIS FILE to the Nicla as main.py (OpenMV IDE: Tools > Save open script to OpenMV Cam).
 # Optional: also copy config.json next to it; otherwise the CONFIG below is used.
+# Decode mode (SPEC 3): also copy beacons.json (repo root) next to it, or the Nicla won't start.
 #
 # The top half (constants, merge, Node) is pure logic with no hardware in it, so it also
 # imports on a laptop: dashboard/fake_telemetry.py and nicla/test_logic.py reuse it.
@@ -10,6 +11,12 @@
 import json
 import time
 import random
+import hashlib
+
+try:
+    from binascii import unhexlify
+except ImportError:                    # older MicroPython names
+    from ubinascii import unhexlify
 
 try:
     import sensor  # only exists on the OpenMV board
@@ -23,18 +30,21 @@ WIFI_SSID = "CHANGE_ME"
 WIFI_KEY = "CHANGE_ME"
 NODE_NAME = "nicla"
 SPOTTER_ONLY = False   # SPEC 10 fallback: spot cards + gossip, but never claim or work
-STATIC_IP = None       # e.g. ("192.168.1.12", "255.255.255.0", "192.168.1.1", "8.8.8.8")
+STATIC_IP = ("192.168.137.22", "255.255.255.0", "192.168.137.1", "192.168.137.1")   # must match config.json; None = DHCP
 VERBOSE = True
 
 # Same content as config.json. Used when there is no config.json on the Nicla's flash.
+# "work": "decode" = crack each card's PIN (SPEC 3). A node that can't decode yet is marked
+# "work": "counter" on its own line, here AND in everyone's config.json.
 CONFIG = {
+    "work": "decode",
     "nodes": {
-        "webcam": {"ip": "192.168.1.11", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": "A"},
-        "nicla":  {"ip": "192.168.1.12", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.05, "zone": "B"},
-        "unoq":   {"ip": "192.168.1.13", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": None},
-        "pi":     {"ip": "192.168.1.14", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.08, "zone": None},
+        "webcam": {"ip": "192.168.137.1", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": "A"},
+        "nicla":  {"ip": "192.168.137.22", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.05, "zone": "B"},
+        "unoq":   {"ip": "192.168.137.54", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": None},
+        "pi":     {"ip": "192.168.137.55", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.08, "zone": None},
     },
-    "dashboard": {"ip": "192.168.1.20", "telemetry_port": 5006},
+    "dashboard": {"ip": "192.168.137.18", "telemetry_port": 5006},
 }
 
 # ---------------------------------------------------------------- constants (SPEC 4), in ms
@@ -50,6 +60,8 @@ OUTBID_MAX_PROGRESS = 0.5
 DETECT_STABLE_FRAMES = 3
 GOSSIP_CHUNK = 6           # max jobs per gossip packet (SPEC 8.1)
 RESET_QUIET_MS = 1000      # ignore gossip this long after a reset (SPEC 8.3)
+TAKEBACK_RATIO = 0.5       # decode mode: take a claimed job at ANY progress if I'm 2x faster
+CRACK_MS = 60              # decode mode: time spent guessing PINs between two camera frames
 RECV_BUF = 2048
 
 # ---------------------------------------------------------------- clock
@@ -70,6 +82,73 @@ def _rand():
     return random.getrandbits(10) / 1024.0
 
 
+# ---------------------------------------------------------------- distress beacons (decode mode)
+#
+# Each card's message is locked with a PIN. One guess = one slow hash:
+#     key = PBKDF2-HMAC-SHA256(pin, salt, rounds, 32 bytes)      right iff sha256(key)[:8] == check
+# Ported from core/beacon.py (pbkdf2_ref). No hmac module and no .copy() on the board.
+
+def pin_str(n, digits):
+    """7, 4 -> '0007'"""
+    s = str(n)
+    return "0" * (digits - len(s)) + s
+
+
+def pbkdf2(pin_bytes, salt_bytes, rounds):
+    key = pin_bytes
+    if len(key) > 64:
+        key = hashlib.sha256(key).digest()
+    key = key + b"\x00" * (64 - len(key))
+    ikey = bytes([k ^ 0x36 for k in key])
+    okey = bytes([k ^ 0x5C for k in key])
+    sha = hashlib.sha256
+    u = sha(okey + sha(ikey + salt_bytes + b"\x00\x00\x00\x01").digest()).digest()
+    # XOR all the rounds together as one big number: much faster on the board than byte by byte
+    out = int.from_bytes(u, "little")
+    for _ in range(rounds - 1):
+        u = sha(okey + sha(ikey + u).digest()).digest()
+        out ^= int.from_bytes(u, "little")
+    return out.to_bytes(32, "little")
+
+
+def pin_ok(b, pin, rounds):
+    """True if `pin` (string) unlocks beacon b. This is ONE guess of real work."""
+    key = pbkdf2(pin.encode(), b["salt"], rounds)
+    return hashlib.sha256(key).digest()[:8] == b["check"]
+
+
+def hash_selftest():
+    """Raises if this port's hash is wrong (it would then never find a PIN, silently).
+    Values from `python -m core.beacon --vectors`."""
+    for pin, salt, rounds, check in (("0420", "a1b2c3d4", 1, "39d2891d0679d7d1"),
+                                     ("0420", "a1b2c3d4", 2, "da4d37d56c63ce67"),
+                                     ("07", "00112233", 500, "e2c242e6d2d0b4f4")):
+        b = {"salt": unhexlify(salt), "check": unhexlify(check)}
+        if not pin_ok(b, pin, rounds):
+            raise ValueError("slow hash self-test failed (rounds=%d)" % rounds)
+
+
+def load_beacons(text):
+    """Text of beacons.json -> (rounds, {card id: {digits, salt, check}}).
+    The message itself (ct, title) is dropped: only the dashboard needs it, and memory is small."""
+    data = json.loads(text)
+    out = {}
+    for jid in data["beacons"]:
+        b = data["beacons"][jid]
+        out[str(jid)] = {"digits": int(b["digits"]), "salt": unhexlify(b["salt"]), "check": unhexlify(b["check"])}
+    return int(data["rounds"]), out
+
+
+def measure_rate(rounds, guesses=20):
+    """Guesses per second this device manages (real guesses, wrong PINs)."""
+    b = {"salt": b"\x00\x11\x22\x33", "check": b"\x00" * 8}
+    start = ticks_ms()
+    for n in range(guesses):
+        pin_ok(b, pin_str(n, 4), rounds)
+    ms = ticks_diff(ticks_ms(), start)
+    return guesses * 1000.0 / max(ms, 1)
+
+
 # ---------------------------------------------------------------- merge (SPEC 6)
 
 def clean_job(jid, j):
@@ -87,6 +166,15 @@ def clean_job(jid, j):
         "epoch": int(j["epoch"]),
         "bid": j.get("bid"),
         "workers": sorted(j.get("workers") or []),
+        "pin": j.get("pin") if isinstance(j.get("pin"), str) else None,   # missing = null
+    }
+
+
+def blank_job(jid, zone, spotted_by):
+    return {
+        "id": jid, "sev": int(jid), "zone": zone, "spotted_by": spotted_by,
+        "progress": 0.0, "done": False, "owner": None, "epoch": 0, "bid": None,
+        "workers": [], "pin": None,
     }
 
 
@@ -113,6 +201,9 @@ def merge_jobs(a, b):
     for w in b["workers"]:
         if w not in workers:
             workers.append(w)
+    pin = a.get("pin")                    # a found PIN is never lost; two differ -> lower string
+    if pin is None or (b.get("pin") is not None and b["pin"] < pin):
+        pin = b.get("pin")
     return {
         "id": a["id"],
         "sev": a["sev"],
@@ -124,6 +215,7 @@ def merge_jobs(a, b):
         "epoch": claim["epoch"],
         "bid": claim["bid"],
         "workers": sorted(workers),
+        "pin": pin,
     }
 
 
@@ -133,13 +225,27 @@ class Node:
     """Pure logic: no sockets, no sleeps. Every method that needs the time takes `now`
     (a ticks_ms value from this device's own clock)."""
 
-    def __init__(self, name, peers, speed, zone, now, spotter_only=False, log=None):
+    def __init__(self, name, peers, speed, zone, now, spotter_only=False, log=None,
+                 beacons=None, rounds=0, rate=None, counter_peers=()):
+        """beacons=None -> counter mode (progress += speed * time), exactly as before.
+        Decode mode: beacons = {card id: {digits, salt, check}}, rounds = hash rounds,
+        rate = my guesses per second. Cards with no beacon still use counter work.
+        counter_peers = peers that can't decode yet (SPEC 3): on beacon jobs only their
+        spots are believed."""
         self.name = name
         self.peers = sorted(peers)        # the OTHER nodes' names
         self.speed = speed
         self.zone = zone
         self.spotter_only = spotter_only
         self.log = log                    # function(str) or None
+
+        self.beacons = beacons            # None = counter mode
+        self.rounds = rounds
+        self.rate = rate
+        self.counter_peers = list(counter_peers) if beacons else []
+        self.trying = None                # PIN guessed last (shown on the dashboard)
+        self.last_crack = now
+        self.credit = 0.0                 # laptop stand-in: guesses earned but not yet made
 
         self.jobs = {}                    # shared state, sent in gossip
         self.last_change = {}             # job id -> my time its progress/claim last changed
@@ -183,6 +289,9 @@ class Node:
                 remote = clean_job(jid, jobs[jid])
             except (KeyError, ValueError, TypeError):
                 continue
+            if sender in self.counter_peers and jid in self.beacons:
+                # it never checked a PIN: believe only that the card exists (its spot)
+                remote = blank_job(jid, remote["zone"], remote["spotted_by"])
             local = self.jobs.get(jid)
             if local is None:
                 self.jobs[jid] = remote
@@ -215,12 +324,17 @@ class Node:
             if not self.crashed:
                 self._log("CRASH")
             self.crashed = True
+            self.current = None
         elif cmd == "revive":
             if self.crashed:              # no-op on a healthy node, so it is safe to repeat
                 self.crashed = False
                 self.current = None
                 self.isolated_since = now
                 self.had_peers = False
+                self.members_snapshot = [
+                    p for p in self.peers
+                    if p in self.last_heard and ticks_diff(now, self.last_heard[p]) <= MEMBER_WINDOW_MS
+                ]
                 for jid in self.jobs:
                     self.last_change[jid] = now
                 self._log("REVIVE")
@@ -249,11 +363,7 @@ class Node:
         jid = str(tag_id)
         if self.blind or self.crashed or jid in self.jobs:
             return False
-        self.jobs[jid] = {
-            "id": jid, "sev": int(tag_id), "zone": self.zone, "spotted_by": self.name,
-            "progress": 0.0, "done": False, "owner": None, "epoch": 0, "bid": None,
-            "workers": [],
-        }
+        self.jobs[jid] = blank_job(jid, self.zone, self.name)
         self.last_change[jid] = now
         self._log("spotted #%s" % jid)
         return True
@@ -269,7 +379,12 @@ class Node:
                 out.append(p)
         return out
 
+    def decoding(self, job):
+        return self.beacons is not None and job["id"] in self.beacons
+
     def my_bid(self, job):
+        if self.decoding(job):
+            return round(1.0 / self.rate, 6)      # seconds per guess, no zone bonus
         bid = 1.0 / self.speed
         if self.zone is not None and job["zone"] == self.zone:
             bid -= 0.5
@@ -297,6 +412,7 @@ class Node:
         self.had_peers = len(reach) > 0
         if self.crashed:
             self.mode = "crashed"
+            self.trying = None
             return
         if reach:
             mode = "connected"
@@ -322,15 +438,56 @@ class Node:
             self._choose(now)
 
         # 5. work
-        if self.current is not None:
-            job = self.jobs[self.current]
-            job["progress"] = min(1.0, job["progress"] + self.speed * dt_ms / 1000.0)
-            if self.name not in job["workers"]:
-                job["workers"] = sorted(job["workers"] + [self.name])
-            self.last_change[self.current] = now
-            if job["progress"] >= 1.0:
+        if self.current is None:
+            self.trying = None
+            return
+        job = self.jobs[self.current]
+        if self.name not in job["workers"]:
+            job["workers"] = sorted(job["workers"] + [self.name])
+        self.last_change[self.current] = now
+        if self.decoding(job):
+            return                        # the guessing itself happens in crack()
+        self.trying = None
+        job["progress"] = min(1.0, job["progress"] + self.speed * dt_ms / 1000.0)
+        if job["progress"] >= 1.0:
+            job["done"] = True
+            self._log("rescued #%s (mode=%s)" % (self.current, self.mode))
+
+    def crack(self, now, guesses=None):
+        """Decode mode work: try the next PINs of my current job, in order 0 .. 10^digits - 1.
+        The Nicla calls this between camera frames with a small `guesses`. With guesses=None
+        (laptop stand-in) it makes as many as `rate` allows for the time since the last call."""
+        dt_ms = min(max(ticks_diff(now, self.last_crack), 0), 1000)
+        self.last_crack = now
+        job = self.jobs.get(self.current) if self.current is not None else None
+        if (self.crashed or job is None or job["done"] or job["owner"] != self.name
+                or not self.decoding(job)):
+            self.credit = 0.0
+            return
+        if guesses is None:
+            self.credit += self.rate * dt_ms / 1000.0
+            guesses = int(self.credit)
+            self.credit -= guesses
+        b = self.beacons[job["id"]]
+        total = 10 ** b["digits"]
+        n = int(round(job["progress"] * total))       # resume at the exact next guess
+        while guesses > 0 and n < total:
+            guess = pin_str(n, b["digits"])
+            self.trying = guess
+            if pin_ok(b, guess, self.rounds):
+                job["pin"] = guess
+                job["progress"] = 1.0
                 job["done"] = True
-                self._log("rescued #%s (mode=%s)" % (self.current, self.mode))
+                self.last_change[job["id"]] = now
+                self._log("rescued #%s: PIN %s (mode=%s)" % (job["id"], guess, self.mode))
+                return
+            n += 1
+            guesses -= 1
+        job["progress"] = n / float(total)
+        self.last_change[job["id"]] = now
+        if n >= total:                    # every PIN tried, none fits: done, pin stays null
+            job["done"] = True
+            self._log("unsolved #%s (mode=%s)" % (job["id"], self.mode))
 
     def _choose(self, now):
         best = None                       # (sev, id, takeover?)
@@ -347,11 +504,13 @@ class Node:
                     pass
                 elif ticks_diff(now, self.last_change.get(jid, now)) > LEASE_MS:
                     takeover = True       # lease expired
-                elif (job["bid"] is not None and self.my_bid(job) < job["bid"]
-                      and job["progress"] < OUTBID_MAX_PROGRESS):
-                    pass                  # outbid: same epoch, lower bid wins the merge
-                else:
+                elif job["bid"] is None:
                     continue
+                elif self.decoding(job):
+                    if not self.my_bid(job) < TAKEBACK_RATIO * job["bid"]:
+                        continue          # take-back: only if 2x faster, but at any progress
+                elif not (self.my_bid(job) < job["bid"] and job["progress"] < OUTBID_MAX_PROGRESS):
+                    continue              # outbid: same epoch, lower bid wins the merge
             elif self.mode == "isolated":
                 if owner is not None or not self.in_my_share(job):
                     continue
@@ -403,19 +562,38 @@ class Node:
         return {
             "type": "telemetry", "v": 1, "node": self.name,
             "mode": "crashed" if self.crashed else self.mode,
-            "reachable": self.reachable(now),
+            "reachable": [] if self.crashed else self.reachable(now),
             "blocked": sorted(self.blocked),
             "blind": self.blind,
             "current": self.current,
+            "trying": None if self.crashed else self.trying,
+            "rate": self.rate,            # null in counter mode
             "jobs": self.jobs,
             "seq": self.seq,
         }
 
 
-def node_from_config(cfg, name, now, spotter_only=False, log=None):
+def decodes(cfg, name):
+    """Does this node crack PINs? (SPEC 3: top-level "work": "decode", and not marked "counter".)"""
+    return cfg.get("work") == "decode" and cfg["nodes"][name].get("work") != "counter"
+
+
+def node_from_config(cfg, name, now, spotter_only=False, log=None, beacons_text=None):
+    """beacons_text = the text of beacons.json; needed in decode mode (raises without it)."""
     me = cfg["nodes"][name]
     peers = [n for n in cfg["nodes"] if n != name]
-    return Node(name, peers, me["speed"], me.get("zone"), now, spotter_only, log)
+    if not decodes(cfg, name):
+        return Node(name, peers, me["speed"], me.get("zone"), now, spotter_only, log)
+    if beacons_text is None:
+        raise ValueError("decode mode needs beacons.json (or mark this node \"work\": \"counter\")")
+    hash_selftest()
+    rounds, beacons = load_beacons(beacons_text)
+    rate = me.get("rate") or measure_rate(rounds)
+    counter_peers = [p for p in peers if cfg["nodes"][p].get("work") == "counter"]
+    if log:
+        log("decode mode: %d beacons, %d guesses/s" % (len(beacons), int(rate)))
+    return Node(name, peers, me["speed"], me.get("zone"), now, spotter_only, log,
+                beacons, rounds, float(rate), counter_peers)
 
 
 # ---------------------------------------------------------------- hardware (Nicla only)
@@ -426,6 +604,14 @@ def _load_config():
             return json.loads(f.read())
     except (OSError, ValueError):
         return CONFIG
+
+
+def _load_beacons_text():
+    try:
+        with open("beacons.json") as f:
+            return f.read()
+    except OSError:
+        return None
 
 
 def _make_leds():
@@ -528,8 +714,14 @@ def run_nicla():
         except OSError:
             pass                                 # WiFi down / packet too big: carry on
 
+    # Decode mode without beacons.json (or with a broken hash) stops here with an error, red LED on:
+    # a node that only counts would push progress past PINs nobody checked (SPEC 3).
+    beacons_text = _load_beacons_text() if decodes(cfg, NODE_NAME) else None
+    node = node_from_config(cfg, NODE_NAME, ticks_ms(), SPOTTER_ONLY, log, beacons_text)
+    beacons_text = None                          # free the memory
+    per_loop = max(1, int(node.rate * CRACK_MS / 1000)) if node.rate else 0
     now = ticks_ms()
-    node = node_from_config(cfg, NODE_NAME, now, SPOTTER_ONLY, log)
+    node.last_step = node.last_crack = node.isolated_since = now      # measuring the rate took a moment
     streak = {}                                  # tag id -> consecutive frames seen
     next_tick = now
     next_gossip = now
@@ -570,6 +762,10 @@ def run_nicla():
                 set_led("green")
             else:
                 set_led("blue")
+
+        # 5 (decode mode). a few PIN guesses between camera frames
+        if per_loop:
+            node.crack(ticks_ms(), per_loop)
 
         # 6. gossip to every non-blocked peer, silent or not (that's how we find them again)
         if ticks_diff(now, next_gossip) >= 0:

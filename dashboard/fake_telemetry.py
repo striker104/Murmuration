@@ -6,6 +6,7 @@ so every dashboard button does something real (block, crash, split, ...).
     python dashboard/fake_telemetry.py                      # all 4 nodes from config.local.json
     python dashboard/fake_telemetry.py --only nicla         # just a stand-in Nicla (to join A's sim)
     python dashboard/fake_telemetry.py --cards 0            # no automatic cards
+    python dashboard/fake_telemetry.py --config config.decode.local.json    # decode mode (cracks PINs)
 
 It also plays "fake camera": every few seconds a camera node spots a new random card, until
 --cards jobs exist. After "Reset round" it starts again. Blind cameras spot nothing.
@@ -50,11 +51,11 @@ def drain(sock, limit=50):
 
 
 class FakeNode:
-    def __init__(self, cfg, name):
+    def __init__(self, cfg, name, beacons_text=None):
         me = cfg["nodes"][name]
         now = logic.ticks_ms()
         self.node = logic.node_from_config(cfg, name, now, log=lambda t: print(
-            "%s %-6s %s" % (time.strftime("%H:%M:%S"), name, t), flush=True))
+            "%s %-6s %s" % (time.strftime("%H:%M:%S"), name, t), flush=True), beacons_text=beacons_text)
         self.gsock = udp_socket(me["gossip_port"])
         self.csock = udp_socket(me["ctl_port"])
         self.peer_addr = {p: (c["ip"], c["gossip_port"]) for p, c in cfg["nodes"].items() if p != name}
@@ -79,6 +80,7 @@ class FakeNode:
         if now >= self.next_tick:
             self.next_tick = now + logic.TICK_MS
             node.step(now)
+            node.crack(now)                 # decode mode: guess PINs at the node's configured rate
         if now >= self.next_gossip:
             self.next_gossip = now + logic.GOSSIP_INTERVAL_MS
             targets = node.gossip_targets()
@@ -104,7 +106,11 @@ def main():
     with open(path) as f:
         cfg = json.load(f)
     names = args.only or list(cfg["nodes"])
-    fakes = [FakeNode(cfg, n) for n in names]
+    beacons_text = None
+    if cfg.get("work") == "decode":         # beacons.json lives next to the config (SPEC 3)
+        with open(os.path.join(os.path.dirname(os.path.abspath(path)), "beacons.json")) as f:
+            beacons_text = f.read()
+    fakes = [FakeNode(cfg, n, beacons_text) for n in names]
     cameras = [f for f in fakes if f.node.zone]
     print("fake nodes: %s  ->  dashboard %s:%d   (Ctrl+C to stop)" % (
         ", ".join(names), cfg["dashboard"]["ip"], cfg["dashboard"]["telemetry_port"]))
