@@ -8,6 +8,7 @@ The dashboard is NOT a node. It only:
   - turns POST /scenario/<name> into control commands (each sent 3 times, 0.1 s apart)
   - keeps a rescue timeline (timeline.py) built from the telemetry, served in /state
   - in decode mode, unlocks each card's message once its PIN is found (decoded.py)
+  - polls the card maker's /locks.json every 2 s for judges' live cards (SPEC §12.5)
 """
 import argparse
 import json
@@ -15,6 +16,7 @@ import os
 import socket
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from decoded import Decoded, beacon
@@ -25,6 +27,16 @@ STALE_AFTER = 2.0        # no telemetry for this long -> "NO SIGNAL"
 CTL_REPEATS = 3
 CTL_GAP = 0.1
 DEFAULT_SPLIT = [["webcam", "unoq"], ["nicla", "pi"]]
+LOCKS_EVERY = 2.0        # SPEC §12.5: poll the card maker's /locks.json this often
+
+
+def default_locks_url(cfg):
+    """The card maker runs on the webcam laptop, port 8080 (SPEC §12.5). None = don't poll."""
+    if "locks_url" in cfg:
+        return cfg["locks_url"] or None
+    if cfg.get("work") != "decode" or "webcam" not in cfg["nodes"]:
+        return None
+    return "http://%s:8080/locks.json" % cfg["nodes"]["webcam"]["ip"]
 
 
 def load_config(path):
@@ -84,6 +96,11 @@ def build_commands(name, params, cfg):
         if x == y:
             raise ValueError("cut needs two different nodes")
         return one(x, "block", peers=[y]) + one(y, "block", peers=[x])
+    if name == "uncut":                # put one cut link back (clicking it on the network graph)
+        x, y = node("x"), node("y")
+        if x == y:
+            raise ValueError("uncut needs two different nodes")
+        return one(x, "unblock", peers=[y]) + one(y, "unblock", peers=[x])
     if name == "split":
         left, right = split_groups(cfg)
         out = []
@@ -119,6 +136,7 @@ def describe(name, params):
         "heal": "Healed everything", "wifi_down": "Took Wi-Fi down", "split": "Split the team",
         "cameras_blind": "Blinded both cameras", "reset": "Reset the round",
         "cut": "Cut the link between %s and %s" % (x, y),
+        "uncut": "Restored the link between %s and %s" % (x, y),
         "blind": "Blinded %s's camera" % x, "unblind": "Restored %s's camera" % x,
         "crash": "Crashed %s" % x, "revive": "Revived %s" % x,
         "flaky": "Started dropping %d%% of messages" % round(float(params.get("loss", 0.3)) * 100),
@@ -177,7 +195,30 @@ class Dashboard:
         counter mode marks such a card done without a PIN; the decoders ignore that, so do we.)"""
         if not job.get("done"):
             return False
-        return str(jid) not in self.decoded.beacons or isinstance(job.get("pin"), str)
+        return not self.decoded.needs_pin(jid) or isinstance(job.get("pin"), str)
+
+    # ---- live judge cards (SPEC §12.5)
+
+    def fetch_locks(self, url, timeout=1.5):
+        """One poll of the card maker's /locks.json. Returns True if it worked."""
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            with self.lock:
+                self.decoded.set_live(data)
+            return True
+        except Exception:          # card maker not running / network down: keep what we had
+            return False
+
+    def poll_locks(self, url):
+        ok = None
+        while True:
+            now_ok = self.fetch_locks(url)
+            if now_ok != ok:
+                ok = now_ok
+                print("judge cards: %s %s" % ("reading" if ok else "can't reach (will keep trying)", url),
+                      flush=True)
+            time.sleep(LOCKS_EVERY)
 
     def _check_agreement(self, now):
         """Time to agree after heal: every live column shows the same set of done jobs."""
@@ -372,6 +413,8 @@ def main():
     ap.add_argument("--config", default="config.json")
     ap.add_argument("--host", default="127.0.0.1", help="web page address (0.0.0.0 to share on the LAN)")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--locks-url", default=None,
+                    help="card maker's /locks.json for judge cards (default: webcam laptop, port 8080; '' = off)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -383,6 +426,9 @@ def main():
                          "Is another dashboard already running? Stop it first."
                          % (cfg["dashboard"]["telemetry_port"], e))
     threading.Thread(target=dash.listen, args=(sock,), daemon=True).start()
+    locks_url = default_locks_url(cfg) if args.locks_url is None else (args.locks_url or None)
+    if locks_url:
+        threading.Thread(target=dash.poll_locks, args=(locks_url,), daemon=True).start()
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(dash))
     print("telemetry: UDP %d   nodes: %s" % (cfg["dashboard"]["telemetry_port"], ", ".join(dash.names)))
     print("dashboard: http://%s:%d" % (args.host, args.port))

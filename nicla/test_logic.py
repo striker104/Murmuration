@@ -26,6 +26,10 @@ CFG = {"nodes": {
 }}
 
 
+LOCK_A = {"title": "Ana", "digits": 4, "salt": "9f3a1c07", "check": "e2c242e6d2d0b4f4"}
+LOCK_B = {"title": "Ben", "digits": 3, "salt": "00112233", "check": "31fa65a9e04b3f55"}
+
+
 def rand_job(rng, jid="7"):
     owner = rng.choice([None] + NAMES)
     spotter = rng.choice(["webcam", "nicla"])
@@ -36,6 +40,7 @@ def rand_job(rng, jid="7"):
         "bid": None if owner is None else rng.choice([7.83, 8.33, 12.5, 19.5]),
         "workers": sorted(rng.sample(NAMES, rng.randint(0, 3))),
         "pin": rng.choice([None, None, "0420", "0999"]),
+        "lock": rng.choice([None, None, LOCK_A, LOCK_B]),
     }
 
 
@@ -302,13 +307,21 @@ class ScenarioTest(unittest.TestCase):
         self.assertTrue(all(t == team.t for t in nicla.last_change.values()))
         self.assertEqual(len(nicla.gossip_targets()), 3)
 
-    def test_gossip_is_chunked_to_six_jobs(self):
+    def test_gossip_is_chunked_to_six_jobs_and_1200_bytes(self):
         node = nm.node_from_config(CFG, "nicla", 0)
         self.assertEqual(len(node.gossip_messages()), 1)          # empty heartbeat
         for i in range(14):
             node.spot(i, 0)
+        for i in range(100, 106):                                 # judge cards carry ~100-byte locks
+            node.jobs[str(i)] = dict(nm.blank_job(str(i), "A", "webcam"), lock=dict(LOCK_A))
         msgs = node.gossip_messages()
-        self.assertEqual([len(m["jobs"]) for m in msgs], [6, 6, 2])
+        sent = {}
+        for m in msgs:
+            self.assertLessEqual(len(m["jobs"]), 6)
+            self.assertLessEqual(len(json.dumps(m["jobs"])), 1200)
+            sent.update(m["jobs"])
+        self.assertEqual(sorted(sent), sorted(node.jobs))         # every job, exactly once
+        self.assertEqual(sum(len(m["jobs"]) for m in msgs), len(node.jobs))
 
     def test_spotter_only_never_claims(self):
         node = nm.node_from_config(CFG, "nicla", 0, spotter_only=True)
@@ -376,7 +389,9 @@ class SlowHashTest(unittest.TestCase):
         with open(os.path.join(os.path.dirname(_path), "..", "beacons.json")) as f:
             rounds, b = nm.load_beacons(f.read())
         self.assertEqual(rounds, 500)
-        self.assertEqual(len(b), 12)
+        self.assertEqual(len(b), 100)
+        self.assertEqual(sorted(b, key=int)[0], "0")
+        self.assertEqual(sorted(b, key=int)[-1], "99")
 
     def test_pin_str(self):
         self.assertEqual(nm.pin_str(7, 4), "0007")
@@ -535,6 +550,128 @@ class DecodeTest(unittest.TestCase):
                          {i: (j["pin"], j["done"]) for i, j in n.jobs.items()})
         workers = set(n.jobs["1"]["workers"]) | set(n.jobs["2"]["workers"])
         self.assertEqual(workers, {"nicla", "pi"})       # they shared the work
+
+
+# ---------------------------------------------------------------- live judge cards (SPEC 12)
+
+def judge_lock(pin, title="Ana", salt="9f3a1c07"):
+    b = beacon.lock(title, "message for " + title, pin, len(pin), salt, ROUNDS)
+    return {"title": title, "digits": b["digits"], "salt": b["salt"], "check": b["check"]}
+
+
+def gossip(sender, jobs):
+    return {"type": "gossip", "v": 1, "from": sender, "seq": 1, "jobs": jobs}
+
+
+class LiveLockTest(unittest.TestCase):
+    def test_merge_keeps_a_lock_and_lower_json_wins(self):
+        base = rand_job(random.Random(2))
+        def lk(x):
+            j = dict(base); j["lock"] = x; return j
+        self.assertEqual(nm.merge_jobs(lk(None), lk(LOCK_A))["lock"], LOCK_A)
+        lower = min(LOCK_A, LOCK_B, key=lambda x: json.dumps(x, sort_keys=True))
+        self.assertEqual(nm.merge_jobs(lk(LOCK_A), lk(LOCK_B))["lock"], lower)
+        self.assertEqual(nm.lock_key(LOCK_A), json.dumps(LOCK_A, sort_keys=True))   # same order as A's code
+
+    def test_lock_is_kept_through_the_wire_and_junk_locks_are_dropped(self):
+        job = dict(nm.blank_job("103", "A", "webcam"), lock=dict(LOCK_A))
+        self.assertEqual(nm.clean_job("103", json.loads(json.dumps(job)))["lock"], LOCK_A)
+        for junk in ({"digits": 4, "salt": "zz", "check": "e2c242e6d2d0b4f4"}, {"digits": 4}, "x",
+                     dict(LOCK_A, check="e2c2"), dict(LOCK_A, digits=9)):
+            self.assertIsNone(nm.clean_job("103", dict(job, lock=junk))["lock"])
+        self.assertIsNone(nm.blank_job("5", "A", "webcam")["lock"])
+
+    def test_live_card_without_a_lock_is_never_claimed(self):
+        node = decoder({6: "0420"})
+        node.spot(103, 0)
+        node.spot(6, 0)
+        node.step(100)
+        self.assertEqual(node.current, "6")                       # the preset card, not #103
+        node.jobs["6"]["done"] = True
+        for t in range(200, 30000, 100):                          # even alone for ages
+            node.step(t)
+        self.assertIsNone(node.jobs["103"]["owner"])
+
+    def test_counter_mode_nicla_never_touches_live_cards(self):
+        node = nm.node_from_config(CFG, "nicla", 0)
+        node.spot(103, 0)
+        for t in range(100, 30000, 100):
+            node.step(t)
+        self.assertEqual((node.jobs["103"]["owner"], node.jobs["103"]["progress"]), (None, 0.0))
+
+    def test_lock_command_then_crack_and_reset_keeps_the_lock(self):
+        node = decoder({6: "0420"})
+        lock = judge_lock("0731")
+        node.on_control({"type": "ctl", "cmd": "lock", "id": "103", "lock": lock}, 0)
+        self.assertNotIn("103", node.jobs)                        # a lock never creates a job
+        node.spot(103, 0)
+        self.assertEqual(node.jobs["103"]["lock"], lock)          # my copy carries it
+        node.step(100)
+        self.assertEqual(node.current, "103")
+        self.assertEqual(node.my_bid(node.jobs["103"]), 0.005)    # seconds per guess
+        for t in range(100, 10000, 100):
+            node.step(t)
+            node.crack(t)
+        self.assertEqual((node.jobs["103"]["pin"], node.jobs["103"]["done"]), ("0731", True))
+        node.on_control({"type": "ctl", "cmd": "reset"}, 20000)
+        self.assertIn("103", node.live_locks)                     # SPEC 12.2: reset keeps locks
+        node.spot(103, 25000)
+        self.assertEqual(node.jobs["103"]["lock"], lock)
+
+    def test_lock_command_for_a_preset_or_low_card_is_ignored(self):
+        node = decoder({6: "0420"})
+        for jid in ("6", "42", "abc"):
+            node.on_control({"type": "ctl", "cmd": "lock", "id": jid, "lock": judge_lock("0731")}, 0)
+        self.assertEqual(node.live_locks, {})
+
+    def test_learns_the_lock_from_gossip(self):
+        node = decoder({6: "0420"})
+        job = dict(nm.blank_job("104", "A", "webcam"), lock=judge_lock("0042"))
+        node.on_gossip(gossip("pi", {"104": job}), 100)
+        self.assertIn("104", node.live_locks)
+        node.step(200)
+        self.assertEqual(node.current, "104")
+
+    def test_copy_of_a_live_card_without_a_lock_counts_only_as_a_spot(self):
+        node = decoder({6: "0420"})
+        node.on_control({"type": "ctl", "cmd": "lock", "id": "105", "lock": judge_lock("0731")}, 0)
+        fake = dict(nm.blank_job("105", "A", "webcam"), progress=0.9, done=True, owner="pi", epoch=3,
+                    bid=12.5, workers=["pi"])                       # no lock: it never checked a PIN
+        node.on_gossip(gossip("pi", {"105": fake}), 100)
+        job = node.jobs["105"]
+        self.assertEqual((job["progress"], job["done"], job["owner"], job["epoch"], job["workers"]),
+                         (0.0, False, None, 0, []))
+        self.assertEqual(job["lock"]["title"], "Ana")             # and my copy still carries the lock
+
+    def test_judge_card_cracked_together_with_the_reference_node(self):
+        """The Nicla logic and the laptop reference node share a judge card's work and agree."""
+        from core import node as ref
+        lock = judge_lock("0420", "Zoe", "00a1b2c3")
+        a = ref.Node("pi", ["nicla"], 0.08, None, 0.0, beacons={}, rate=200.0,
+                     check=lambda b, pin: beacon.check(b, pin, ROUNDS))
+        cfg = {"work": "decode", "nodes": {"nicla": dict(CFG["nodes"]["nicla"], rate=200),
+                                           "pi": dict(CFG["nodes"]["pi"], rate=200)}}
+        n = nm.node_from_config(cfg, "nicla", 0, beacons_text=json.dumps({"rounds": ROUNDS, "beacons": {}}))
+        lock2 = judge_lock("0150", "Max", "00a1b2c4")
+        n.on_control({"type": "ctl", "cmd": "lock", "id": "110", "lock": lock}, 0)   # only the Nicla heard them
+        n.on_control({"type": "ctl", "cmd": "lock", "id": "111", "lock": lock2}, 0)
+        n.spot(110, 0)
+        n.spot(111, 0)
+        for i in range(1, 400):
+            t = i * 100
+            if i % 3 == 0:
+                for msg in n.gossip_messages():
+                    a.on_gossip(json.loads(json.dumps(msg)), t / 1000.0)
+                for msg in a.gossip_messages():
+                    n.on_gossip(json.loads(json.dumps(msg)), t)
+            n.step(t)
+            n.crack(t)
+            a.tick(t / 1000.0)
+        self.assertEqual(sorted(a.live_locks), ["110", "111"])    # the reference node learned them from us
+        self.assertEqual((n.jobs["110"]["pin"], a.jobs["110"]["pin"]), ("0420", "0420"))
+        self.assertEqual((n.jobs["111"]["pin"], a.jobs["111"]["pin"]), ("0150", "0150"))
+        self.assertEqual(set(n.jobs["110"]["workers"]) | set(n.jobs["111"]["workers"]), {"nicla", "pi"})
+        self.assertEqual(a.jobs["110"]["lock"], n.jobs["110"]["lock"])
 
 
 if __name__ == "__main__":
