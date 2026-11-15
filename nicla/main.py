@@ -41,7 +41,7 @@ CONFIG = {
     "nodes": {
         "webcam": {"ip": "192.168.137.1", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": "A"},
         "nicla":  {"ip": "192.168.137.22", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.05, "zone": "B"},
-        "unoq":   {"ip": "192.168.137.54", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": None},
+        "unoq":   {"ip": "192.168.137.43", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.12, "zone": None},
         "pi":     {"ip": "192.168.137.55", "gossip_port": 5005, "ctl_port": 5007, "speed": 0.08, "zone": None},
     },
     "dashboard": {"ip": "192.168.137.18", "telemetry_port": 5006},
@@ -61,6 +61,8 @@ DETECT_STABLE_FRAMES = 3
 GOSSIP_CHUNK = 6           # max jobs per gossip packet (SPEC 8.1)
 RESET_QUIET_MS = 1000      # ignore gossip this long after a reset (SPEC 8.3)
 TAKEBACK_RATIO = 0.5       # decode mode: take a claimed job at ANY progress if I'm 2x faster
+LIVE_START = 100           # SPEC 12: card ids from here up may be judges' live cards
+GOSSIP_MAX_BYTES = 1200    # SPEC 12.4: a gossip message also stays under this many bytes of JSON
 CRACK_MS = 60              # decode mode: time spent guessing PINs between two camera frames
 RECV_BUF = 2048
 
@@ -149,6 +151,37 @@ def measure_rate(rounds, guesses=20):
     return guesses * 1000.0 / max(ms, 1)
 
 
+# ---------------------------------------------------------------- live locks (SPEC 12)
+#
+# A judge's card (id 100+, not in beacons.json) has its lock sent live, in a `lock` field:
+#     {"title": "Ana", "digits": 4, "salt": "9f3a1c07", "check": "e2c242e6d2d0b4f4"}
+
+def valid_lock(lock):
+    """A lock we can actually crack: digits 1-6, hex salt, 16-hex check."""
+    if not isinstance(lock, dict):
+        return False
+    try:
+        unhexlify(lock["salt"])
+        return 1 <= int(lock["digits"]) <= 6 and len(lock["check"]) == 16 and len(unhexlify(lock["check"])) == 8
+    except Exception:
+        return False
+
+
+def lock_fields(lock):
+    return {"title": str(lock.get("title", ""))[:12], "digits": int(lock["digits"]),
+            "salt": lock["salt"], "check": lock["check"]}
+
+
+def lock_bytes(lock):
+    """The form crack() uses (like a beacons.json entry here)."""
+    return {"digits": int(lock["digits"]), "salt": unhexlify(lock["salt"]), "check": unhexlify(lock["check"])}
+
+
+def lock_key(lock):
+    """json.dumps(lock, sort_keys=True), which MicroPython's json can't do. Merge: lower wins."""
+    return "{" + ", ".join(json.dumps(k) + ": " + json.dumps(lock[k]) for k in sorted(lock)) + "}"
+
+
 # ---------------------------------------------------------------- merge (SPEC 6)
 
 def clean_job(jid, j):
@@ -167,6 +200,7 @@ def clean_job(jid, j):
         "bid": j.get("bid"),
         "workers": sorted(j.get("workers") or []),
         "pin": j.get("pin") if isinstance(j.get("pin"), str) else None,   # missing = null
+        "lock": lock_fields(j["lock"]) if valid_lock(j.get("lock")) else None,
     }
 
 
@@ -174,7 +208,7 @@ def blank_job(jid, zone, spotted_by):
     return {
         "id": jid, "sev": int(jid), "zone": zone, "spotted_by": spotted_by,
         "progress": 0.0, "done": False, "owner": None, "epoch": 0, "bid": None,
-        "workers": [], "pin": None,
+        "workers": [], "pin": None, "lock": None,
     }
 
 
@@ -204,6 +238,9 @@ def merge_jobs(a, b):
     pin = a.get("pin")                    # a found PIN is never lost; two differ -> lower string
     if pin is None or (b.get("pin") is not None and b["pin"] < pin):
         pin = b.get("pin")
+    lock = a.get("lock")                  # a live lock is never lost; two differ -> lower JSON string
+    if not lock or (b.get("lock") and lock_key(b["lock"]) < lock_key(lock)):
+        lock = b.get("lock")
     return {
         "id": a["id"],
         "sev": a["sev"],
@@ -216,6 +253,7 @@ def merge_jobs(a, b):
         "bid": claim["bid"],
         "workers": sorted(workers),
         "pin": pin,
+        "lock": lock or None,
     }
 
 
@@ -242,7 +280,9 @@ class Node:
         self.beacons = beacons            # None = counter mode
         self.rounds = rounds
         self.rate = rate
-        self.counter_peers = list(counter_peers) if beacons else []
+        self.counter_peers = list(counter_peers) if beacons is not None else []
+        self.live_locks = {}              # SPEC 12: card id -> lock learned live (kept across reset)
+        self.live_bytes = {}              # the same, in the form crack() uses
         self.trying = None                # PIN guessed last (shown on the dashboard)
         self.last_crack = now
         self.credit = 0.0                 # laptop stand-in: guesses earned but not yet made
@@ -289,19 +329,24 @@ class Node:
                 remote = clean_job(jid, jobs[jid])
             except (KeyError, ValueError, TypeError):
                 continue
-            if sender in self.counter_peers and jid in self.beacons:
-                # it never checked a PIN: believe only that the card exists (its spot)
+            if remote["lock"] and jid not in self.live_locks:
+                self.learn_lock(jid, remote["lock"])         # SPEC 12.1: learned from gossip
+            if ((sender in self.counter_peers and self.beacon_for(jid) is not None)
+                    or (self.is_live(jid) and not remote["lock"])):
+                # it never checked a PIN (counter-marked, or a live card it has no lock for):
+                # believe only that the card exists (its spot)
                 remote = blank_job(jid, remote["zone"], remote["spotted_by"])
             local = self.jobs.get(jid)
             if local is None:
                 self.jobs[jid] = remote
                 self.last_change[jid] = now
-                continue
-            merged = merge_jobs(local, remote)
-            if (merged["progress"] != local["progress"] or merged["owner"] != local["owner"]
-                    or merged["epoch"] != local["epoch"] or merged["bid"] != local["bid"]):
-                self.last_change[jid] = now
-            self.jobs[jid] = merged
+            else:
+                merged = merge_jobs(local, remote)
+                if (merged["progress"] != local["progress"] or merged["owner"] != local["owner"]
+                        or merged["epoch"] != local["epoch"] or merged["bid"] != local["bid"]):
+                    self.last_change[jid] = now
+                self.jobs[jid] = merged
+            self.attach_lock(jid)
 
     def on_control(self, msg, now):
         cmd = msg.get("cmd")
@@ -355,7 +400,16 @@ class Node:
             self.isolated_since = now
             self.had_peers = False
             self.quiet_until = now + RESET_QUIET_MS
-            self._log("RESET")
+            self._log("RESET")                       # live locks are kept (SPEC 12.2)
+        elif cmd == "lock":
+            # SPEC 12.2: a judge's card lock, from the card maker. Never creates a job.
+            jid = str(msg.get("id"))
+            if self.learn_lock(jid, msg.get("lock"), replace=True):
+                self.attach_lock(jid)
+        elif cmd == "spot":
+            # TEST-ONLY (sim/fake_camera.py, and the card maker's judge cards on the webcam)
+            if msg.get("tag") is not None and str(msg.get("tag")).isdigit():
+                self.spot(int(msg.get("tag")), now)
 
     # ---- spotting (SPEC 7.2) - local, works with or without network
 
@@ -364,6 +418,7 @@ class Node:
         if self.blind or self.crashed or jid in self.jobs:
             return False
         self.jobs[jid] = blank_job(jid, self.zone, self.name)
+        self.attach_lock(jid)
         self.last_change[jid] = now
         self._log("spotted #%s" % jid)
         return True
@@ -379,8 +434,36 @@ class Node:
                 out.append(p)
         return out
 
+    # ---- which cards I can crack (beacons.json, or a judge's live lock)
+
+    def is_live(self, jid):
+        """A judge's card (SPEC 12): id 100+ and not in beacons.json."""
+        return jid.isdigit() and int(jid) >= LIVE_START and not (self.beacons and jid in self.beacons)
+
+    def beacon_for(self, jid):
+        """The lock I crack this card with, or None (counter mode, or no lock known)."""
+        if self.beacons is None:
+            return None
+        return self.beacons.get(jid) or self.live_bytes.get(jid)
+
     def decoding(self, job):
-        return self.beacons is not None and job["id"] in self.beacons
+        return self.beacon_for(job["id"]) is not None
+
+    def learn_lock(self, jid, lock, replace=False):
+        if not self.is_live(jid) or not valid_lock(lock) or (jid in self.live_locks and not replace):
+            return False
+        fields = lock_fields(lock)
+        if self.live_locks.get(jid) != fields:       # the card maker re-sends every 5 s: log once
+            self.live_locks[jid] = fields
+            self.live_bytes[jid] = lock_bytes(lock)
+            self._log("lock for judge card #%s (%s)" % (jid, fields["title"]))
+        return True
+
+    def attach_lock(self, jid):
+        """My copy of a live card carries its lock, so gossip spreads it (SPEC 12.1)."""
+        job = self.jobs.get(jid)
+        if job is not None and not job.get("lock") and jid in self.live_locks:
+            job["lock"] = dict(self.live_locks[jid])
 
     def my_bid(self, job):
         if self.decoding(job):
@@ -468,7 +551,7 @@ class Node:
             self.credit += self.rate * dt_ms / 1000.0
             guesses = int(self.credit)
             self.credit -= guesses
-        b = self.beacons[job["id"]]
+        b = self.beacon_for(job["id"])
         total = 10 ** b["digits"]
         n = int(round(job["progress"] * total))       # resume at the exact next guess
         while guesses > 0 and n < total:
@@ -495,6 +578,8 @@ class Node:
             job = self.jobs[jid]
             if job["done"]:
                 continue
+            if self.is_live(jid) and not self.decoding(job):
+                continue                  # SPEC 12.3: a judge's card I have no lock for: leave it
             owner = job["owner"]
             takeover = False
             if owner == self.name:
@@ -542,20 +627,23 @@ class Node:
         return self.loss > 0 and _rand() < self.loss
 
     def gossip_messages(self):
-        """Full job list split into packets of at most GOSSIP_CHUNK jobs.
+        """Full job list split into packets of at most GOSSIP_CHUNK jobs AND at most
+        GOSSIP_MAX_BYTES of JSON (SPEC 12.4: locks make jobs bigger).
         Always at least one (possibly empty) message: it doubles as the heartbeat."""
-        ids = sorted(self.jobs)
+        chunks = [{}]
+        size = 0
+        for jid in sorted(self.jobs):
+            n = len(json.dumps(self.jobs[jid])) + len(jid) + 6      # job + key + separators
+            if chunks[-1] and (len(chunks[-1]) >= GOSSIP_CHUNK or size + n > GOSSIP_MAX_BYTES - 80):
+                chunks.append({})
+                size = 0
+            chunks[-1][jid] = self.jobs[jid]
+            size += n
         out = []
-        i = 0
-        while True:
-            chunk = {}
-            for jid in ids[i:i + GOSSIP_CHUNK]:
-                chunk[jid] = self.jobs[jid]
+        for chunk in chunks:
             self.seq += 1
             out.append({"type": "gossip", "v": 1, "from": self.name, "seq": self.seq, "jobs": chunk})
-            i += GOSSIP_CHUNK
-            if i >= len(ids):
-                return out
+        return out
 
     def telemetry(self, now):
         self.seq += 1
