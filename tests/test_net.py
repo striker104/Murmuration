@@ -4,13 +4,16 @@ learns the right one from that peer's gossip, and both end up connected.
 Run:  python -m unittest tests.test_net -v
 """
 import copy
+import json
 import os
+import tempfile
 import sys
 import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from core.net import Runner  # noqa: E402
+from core.net import Runner, load_config  # noqa: E402
+from core import beacon                   # noqa: E402
 
 BASE = {
     "nodes": {
@@ -63,6 +66,39 @@ class LearnAddress(unittest.TestCase):
         a.control("block", peers=["b"])
         run_both(a, b, 1.0)
         self.assertEqual(a.addr["b"][0], "10.255.255.1")          # ignored gossip -> nothing learned
+
+
+class DecodeConfig(unittest.TestCase):
+    """'work': 'decode' loads beacons.json next to the config; missing file -> counter mode."""
+
+    def start(self, with_beacons):
+        cfg = copy.deepcopy(BASE)
+        cfg["work"] = "decode"
+        cfg["nodes"]["a"]["rate"] = 100
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "config.json")
+        with open(path, "w") as f:
+            json.dump(cfg, f)
+        if with_beacons:
+            b = beacon.lock("T", "hi", "07", 2, "a1b2c3d4", 3)
+            with open(os.path.join(d, "beacons.json"), "w") as f:
+                json.dump({"rounds": 3, "beacons": {"7": b}}, f)
+        r = Runner("a", load_config(path))
+        self.addCleanup(r.gossip_sock.close)
+        self.addCleanup(r.ctl_sock.close)
+        return r
+
+    def test_decode_config_loads_beacons(self):
+        r = self.start(True)
+        self.assertEqual(list(r.node.beacons), ["7"])
+        self.assertEqual(r.node.rate, 100)
+        b = r.node.beacons["7"]
+        self.assertTrue(r.node.check(b, "07"))
+        self.assertFalse(r.node.check(b, "08"))
+
+    def test_decode_missing_file_falls_back(self):
+        r = self.start(False)
+        self.assertIsNone(r.node.beacons)
 
 
 if __name__ == "__main__":
