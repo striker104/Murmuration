@@ -34,8 +34,8 @@ CARDS = {
     11: ("Zoe", "Zoe, 30: reception. Minor cuts, helping others.", 2, "48"),
 }
 
-# guesses/s at rounds=500 (laptop measured; others estimated until measured on the device)
-RATES = [("laptop", 5500), ("unoq", 900), ("pi", 180), ("nicla", 30)]
+# guesses/s at rounds=500, measured 2026-11-15 (nicla still an estimate)
+RATES = [("laptop", 5500), ("unoq", 1670), ("pi", 153), ("nicla", 30)]
 
 
 def salt_for(card):
