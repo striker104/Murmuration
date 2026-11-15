@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 murmuration.log
 .superpowers/
+answer_key.txt
+sim/entries.txt
+beacons.prev.json
