@@ -172,6 +172,23 @@ def _cards(ids):
 
 # ---- web form: LIVE judge cards (SPEC §12) -------------------------------------------
 
+def qr_image(text, scale=10):
+    """QR code as a grayscale image (OpenCV, no extra library), with a white border."""
+    import cv2
+    params = cv2.QRCodeEncoder.Params()
+    params.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_M
+    q = cv2.QRCodeEncoder.create(params).encode(text)
+    q = cv2.resize(q, (q.shape[1] * scale, q.shape[0] * scale), interpolation=cv2.INTER_NEAREST)
+    return cv2.copyMakeBorder(q, 4 * scale, 4 * scale, 4 * scale, 4 * scale,
+                              cv2.BORDER_CONSTANT, value=255)
+
+
+def qr_png(text):
+    import cv2
+    ok, buf = cv2.imencode(".png", qr_image(text))
+    return buf.tobytes()
+
+
 def form_entry(form):
     """parse_qs dict -> (name, message, level), or None if the message is empty."""
     name = _clean((form.get("name") or ["?"])[0], MAX_NAME) or "?"
@@ -188,8 +205,10 @@ def render_page(cards, card=None, error=""):
                                                         l.capitalize()) for l in LEVELS)
     got = ""
     if card:
-        got = ('<div class="got">Your card is <span>#%s</span>Pick up card #%s and show it '
-               'to a camera. The swarm will crack your PIN.</div>' % (e(card), e(card)))
+        got = ('<div class="got">Your card is <span>#%s</span>Turn your brightness up and hold '
+               'this QR code 20-30 cm in front of the <b>webcam</b>. The swarm will crack your PIN.'
+               '<img src="/qr/%s.png" alt="QR"><small>No luck scanning? Ask for printed '
+               'LIVE card #%s.</small></div>' % (e(card), e(card), e(card)))
     err = '<p class="err">%s</p>' % e(error) if error else ""
     return """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Murmuration</title>
@@ -197,6 +216,7 @@ def render_page(cards, card=None, error=""):
 input,textarea,select,button{width:100%%;font-size:18px;margin:6px 0;padding:8px;box-sizing:border-box}
 button{background:#2a7;color:#fff;border:0}.err{color:#f66}
 .got{background:#253;padding:12px;margin:12px 0;font-size:18px}.got span{display:block;font-size:56px;font-weight:bold}
+.got img{display:block;width:100%%;margin:12px auto;background:#fff;image-rendering:pixelated}.got small{display:block;color:#aaa}
 </style></head><body>%s%s<h2>Send a distress message</h2>
 <p>It gets locked with a secret PIN nobody knows. The swarm has to crack it to read it.</p>
 <form method="post" action="/add">
@@ -245,6 +265,14 @@ def serve(port, config_path):
 
         def do_GET(self):
             url = urlparse(self.path)
+            if url.path.startswith("/qr/") and url.path.endswith(".png"):
+                from core.beacon import qr_text
+                cid = url.path[4:-4]
+                with mutex:
+                    known = cid in live.state["beacons"]
+                    lk = live.lock_message(cid)["lock"] if known else None
+                if lk:
+                    return self._send(qr_png(qr_text(cid, lk)), "image/png")
             if url.path == "/locks.json":
                 with mutex:
                     return self._send(json.dumps(live.locks_json()), "application/json")

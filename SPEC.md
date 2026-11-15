@@ -439,6 +439,14 @@ maker). `title` ≤ 12 chars, `digits` 3–5.
 - Sent 3× 0.1 s apart when the judge taps "Lock it", then **every live lock is re-sent every 5 s**
   (so a rebooted node catches up). `reset` clears jobs but **keeps** live locks.
 
+### 12.2b The judge's QR code (the normal way in)
+After "Lock it", the judge's phone shows a QR code: `M1:<id>:<digits>:<SALT>:<CHECK>`
+(uppercase hex → compact QR; no name — names come from `/locks.json`). The **webcam** scans it
+(A's `adapters/webcam/detect.py`), learns the lock (same as the `lock` command) and spots card
+`<id>`. Other nodes learn the lock through gossip (§12.1). The Nicla does **not** scan QR codes
+(too few pixels) — it learns locks from gossip. Printed LIVE cards 100–119 (AprilTags) are only
+a backup if a phone won't scan; the lock still arrives by the `lock` command.
+
 ### 12.3 Safety rules (decode mode, live cards only)
 1. A live card whose lock I don't know yet is **not worked or claimed** (it stays in the job
    list, unowned) until I learn its lock. Cards < 100 with no beacon: counter work as today.

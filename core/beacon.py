@@ -91,6 +91,33 @@ def load_beacons(path):
     return int(data["rounds"]), {str(k): v for k, v in data["beacons"].items()}
 
 
+QR_PREFIX = "M1"
+
+
+def qr_text(cid, lock):
+    """Judge QR (SPEC §12): 'M1:103:4:<SALT>:<CHECK>' — uppercase so the QR uses its compact
+    alphanumeric mode (fewer squares -> scans from further away). No name: the dashboard
+    gets names from the card maker's /locks.json."""
+    return ":".join([QR_PREFIX, str(cid), str(int(lock["digits"])), lock["salt"].upper(),
+                     lock["check"].upper()])
+
+
+def parse_qr(text):
+    """-> (card id str, lock dict) or None if it isn't one of our QR codes."""
+    parts = (text or "").split(":")
+    if len(parts) != 5 or parts[0] != QR_PREFIX or not parts[1].isdigit():
+        return None
+    try:
+        digits = int(parts[2])
+        salt, chk = parts[3].lower(), parts[4].lower()
+        if not 1 <= digits <= 6 or not salt or len(bytes.fromhex(chk)) != 8:
+            return None
+        bytes.fromhex(salt)
+    except ValueError:
+        return None
+    return parts[1], {"title": "", "digits": digits, "salt": salt, "check": chk}
+
+
 def bench(rounds, seconds=0.3):
     """Guesses per second this device manages (real check() calls, wrong PINs)."""
     b = {"salt": "00112233", "check": "0" * 16}
