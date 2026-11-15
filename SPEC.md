@@ -404,3 +404,54 @@ Full design: `docs/superpowers/specs/2026-11-15-distress-decoding-design.md`. Re
 | 09:00–11:30 | rehearse demo × 5, record backup video | | |
 
 If behind, cut in this order: Nicla working jobs (spotter-only) → UNO Q MCU failsafe → scoreboard.
+
+---
+
+## 12. DRAFT — live locks (judge messages)  ⚠ needs B's OK before anyone builds it
+
+**Goal:** a judge types a message on their phone (card maker page, `sim/card_maker.py serve`
+on the webcam laptop, port 8080), gets told "your card is #103", holds pre-printed card #103 up
+to a camera, and the swarm cracks it live. No copying files, no restarts.
+
+**Card ids:** 0–99 = presets in `beacons.json`. **100+ = live cards** (pre-print 100–119).
+
+### 12.1 New optional job field `lock`
+```json
+"lock": {"title": "Ana", "digits": 4, "salt": "9f3a1c07", "check": "e2c242e6d2d0b4f4"}
+```
+Same meaning as a `beacons.json` entry, minus `ct` (the scrambled message stays on the card
+maker). `title` ≤ 12 chars, `digits` 3–5.
+- **Merge:** non-null wins; both non-null → the one whose `json.dumps(lock, sort_keys=True)`
+  string is lower (they're identical in practice). Missing field = null.
+- **A job's beacon** = the `beacons.json` entry for its id if there is one, else its `lock`.
+- **Learning:** whenever a merged job has a `lock` and I have none for that id, I store it.
+  Whenever I know a live lock for a job, my copy of the job carries it (so gossip spreads it to
+  nodes that missed the control command).
+
+### 12.2 New control command `lock` (card maker → every node's `ctl_port`)
+```json
+{"type": "ctl", "cmd": "lock", "id": "103", "lock": {"title": "Ana", "digits": 4, "salt": "...", "check": "..."}}
+```
+- Node stores the lock for that id; if the job exists, attaches it. It does **not** create a job
+  (the card must still be spotted by a camera).
+- Sent 3× 0.1 s apart when the judge taps "Lock it", then **every live lock is re-sent every 5 s**
+  (so a rebooted node catches up). `reset` clears jobs but **keeps** live locks.
+
+### 12.3 Safety rule (decode mode)
+A card with id ≥ 100 whose lock I don't know yet is **not worked or claimed** (it stays in the
+job list, unowned) until I learn its lock. Cards < 100 with no beacon: counter work as today.
+*(Stops any node doing fake counter progress on a live card — the earlier Nicla problem.)*
+
+### 12.4 Gossip size
+Locks add ~100 bytes per live job, so a gossip message holds **at most 6 jobs AND at most
+1200 bytes** of JSON; start a new message when either would be exceeded. Receivers unchanged.
+
+### 12.5 Dashboard
+`GET http://192.168.137.1:8080/locks.json` → `{"rounds": 500, "beacons": {"103": {title,
+digits, salt, check, ct}}}` (poll every ~2 s). When job 103 is done with a `pin`:
+`core.beacon.unlock(beacons["103"], pin, rounds)` → the judge's message.
+
+### 12.6 Who builds what
+| A (core, card maker, tests) | B (Nicla, dashboard) |
+|---|---|
+| `lock` field + merge + learning, `lock` command, safety rule, byte-limited chunks; card maker "Lock it" sends live + `/locks.json`; LIVE cards 100–119 to print | Nicla: same 4 rules (field/merge/learn, command, safety rule, byte-limited chunks). Dashboard: poll `/locks.json`, show title + message on unlock |
