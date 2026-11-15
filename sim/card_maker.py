@@ -6,6 +6,7 @@ difficulty they chose -> beacons.json + printable cards. Nobody (not even us) kn
                                                 "Lock it" -> next card 100-199, lock sent to every
                                                 node (SPEC §12); dashboard reads /locks.json
     python sim/card_maker.py make entries.txt   from a file (lines or a Microsoft Forms CSV export)
+    python sim/card_maker.py fresh              forget live card numbers (then restart all nodes)
 
 Entry lines:   Maria | Trapped under desk, room 3B | hard        (easy / medium / hard)
 Forms CSV:     columns whose names contain "name", "message", "difficult" are used.
@@ -309,15 +310,29 @@ def serve(port, config_path):
     ThreadingHTTPServer(("", port), H).serve_forever()
 
 
+def fresh(path=None):
+    """Forget all live card numbers (start again at #100). -> True if something was deleted.
+    Afterwards RESTART every node so they forget the old live locks too."""
+    path = path or LIVE_STATE
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["serve", "make"])
+    ap.add_argument("cmd", choices=["serve", "make", "fresh"])
     ap.add_argument("file", nargs="?", help="entries file for 'make'")
     ap.add_argument("--start", type=int, default=200, help="first card id for file-made cards")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--config", default=os.path.join(ROOT, "config.json"),
                     help="where to send live locks (every node's ctl port)")
     a = ap.parse_args()
+    if a.cmd == "fresh":
+        print("live cards reset: next judge card is #100" if fresh() else "nothing to reset")
+        print("NOW restart every node (Pi, UNO Q services, webcam, Nicla) so they forget old locks")
+        return
     if a.cmd == "serve":
         serve(a.port, a.config)
     else:
