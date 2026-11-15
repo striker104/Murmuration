@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from core.node import merge_job, new_job  # noqa: E402
 
 NAMES = [None, "nicla", "pi", "unoq", "webcam"]
+LOCK_A = {"title": "Ana", "digits": 4, "salt": "9f3a1c07", "check": "e2c242e6d2d0b4f4"}
+LOCK_B = {"title": "Bo", "digits": 3, "salt": "00112233", "check": "0123456789abcdef"}
 
 
 def random_copy(rng):
@@ -24,6 +26,7 @@ def random_copy(rng):
     j["bid"] = None if owner is None else rng.choice([7.833, 8.333, 12.5, 19.5, 20.0])
     j["workers"] = sorted(rng.sample(["nicla", "pi", "unoq", "webcam"], rng.randint(0, 3)))
     j["pin"] = rng.choice([None, None, "0420", "0007"])
+    j["lock"] = rng.choice([None, None, LOCK_A, LOCK_B])
     return j
 
 
@@ -107,6 +110,13 @@ class TestMergeRules(unittest.TestCase):
         old = self.job()
         del old["pin"]
         self.assertEqual(merge_job(old, self.job(pin="0420"))["pin"], "0420")
+
+    def test_lock_non_null_wins_and_is_never_lost(self):
+        self.assertEqual(merge_job(self.job(lock=None), self.job(lock=LOCK_A))["lock"], LOCK_A)
+        self.assertEqual(merge_job(self.job(lock=LOCK_A), self.job())["lock"], LOCK_A)
+        old = self.job()
+        del old["lock"]
+        self.assertEqual(merge_job(old, self.job(lock=LOCK_B))["lock"], LOCK_B)
 
 
 if __name__ == "__main__":

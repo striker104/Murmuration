@@ -20,6 +20,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from core.net import Runner, load_config        # noqa: E402
 from core.node import TagStabilizer            # noqa: E402
 from core.run_node import make_logger          # noqa: E402
+from core.status import StatusLine, status_line  # noqa: E402
+
+STATUS_EVERY = 0.2      # seconds between redraws of the terminal status line
 
 MODE_COLOURS = {                                # BGR
     "connected": (80, 200, 80),
@@ -104,8 +107,17 @@ def open_camera(index):
 
 
 def run(args):
-    runner = Runner(args.name, load_config(args.config), make_logger(args.name, args.log))
+    status = StatusLine()
+    log = make_logger(args.name, args.log)
+
+    def on_event(kind, job_id, mode):
+        status.clear()              # log lines scroll above the live status line
+        log(kind, job_id, mode)
+
+    runner = Runner(args.name, load_config(args.config), on_event)
     runner.start_thread()
+    titles = {k: b.get("title", "") for k, b in (runner.node.beacons or {}).items()}
+    spin, next_status = 0, 0.0
     print("[%s] node up; opening camera %d" % (args.name, args.camera), flush=True)
 
     cap = open_camera(args.camera)
@@ -126,6 +138,11 @@ def run(args):
             now = time.monotonic()
             fps = 0.9 * fps + 0.1 * (1.0 / max(now - last, 1e-3))
             last = now
+            if now >= next_status:
+                next_status = now + STATUS_EVERY
+                spin += 1
+                status.draw(status_line(args.name, runner.snapshot(), spin, titles,
+                                        runner.node.rate))
 
             if args.no_window:
                 continue
@@ -144,6 +161,7 @@ def run(args):
     except KeyboardInterrupt:
         pass
     finally:
+        status.clear()
         runner.stop()
         cap.release()
         cv2.destroyAllWindows()
