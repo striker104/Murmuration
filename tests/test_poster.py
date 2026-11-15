@@ -23,10 +23,37 @@ class TunnelOutput(unittest.TestCase):
                 "                         |")
         self.assertEqual(find_url(line), "https://brave-lion-tiger-moon.trycloudflare.com")
 
+    def test_finds_the_localhost_run_link(self):
+        line = "a1b2c3d4e5f6.lhr.life tunneled with tls termination, https://a1b2c3d4e5f6.lhr.life"
+        self.assertEqual(find_url(line), "https://a1b2c3d4e5f6.lhr.life")
+        self.assertIsNone(find_url("visit https://admin.localhost.run/ to set up a custom domain"))
+
     def test_ignores_other_lines(self):
         for line in ["INF Requesting new quick Tunnel on trycloudflare.com...",
                      "https://api.trycloudflare.com/tunnel", "", "ERR something"]:
             self.assertIsNone(find_url(line), line)
+
+
+class StartTunnel(unittest.TestCase):
+    """start_tunnel with fake 'tunnel' programs (no network)."""
+
+    def run_fake(self, code, timeout=5):
+        from sim.public_link import start_tunnel
+        proc, url = start_tunnel([sys.executable, "-c", code], timeout)
+        if proc:
+            proc.terminate()
+        return url
+
+    def test_gets_the_link_and_keeps_running(self):
+        code = ("import time;print('INF starting');"
+                "print('x.lhr.life tunneled, https://abc123.lhr.life', flush=True);time.sleep(30)")
+        self.assertEqual(self.run_fake(code), "https://abc123.lhr.life")
+
+    def test_program_that_exits_without_a_link(self):
+        self.assertIsNone(self.run_fake("print('failed to request quick Tunnel')"))
+
+    def test_program_that_hangs_times_out(self):
+        self.assertIsNone(self.run_fake("import time;time.sleep(30)", timeout=1))
 
 
 @unittest.skipIf(cv2 is None, "needs OpenCV")
