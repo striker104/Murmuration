@@ -30,6 +30,9 @@ def decode_setup(name, config):
     """'work': 'decode' -> (beacons, rate, check); otherwise (None, None, None) = counter mode."""
     if config.get("work", "counter") != "decode":
         return None, None, None
+    if config["nodes"][name].get("work") == "counter":
+        print("[%s] marked \"work\": \"counter\" -> counter mode" % name, flush=True)
+        return None, None, None
     path = os.path.join(config.get("_dir", "."), "beacons.json")
     try:
         rounds, beacons = beacon.load_beacons(path)
@@ -49,6 +52,13 @@ def decode_setup(name, config):
     def check(b, pin):
         return beacon.check(b, pin, rounds)
     return beacons, float(rate), check
+
+
+def counter_peers(name, config):
+    """Decode mode: peers marked "work": "counter" in config (can't decode yet, e.g. Nicla)."""
+    if config.get("work", "counter") != "decode":
+        return []
+    return [n for n, c in config["nodes"].items() if n != name and c.get("work") == "counter"]
 
 
 def _encode(msg):
@@ -82,7 +92,8 @@ class Runner:
         beacons, rate, check = decode_setup(name, config)
         now = time.monotonic()           # after the benchmark
         self.node = Node(name, list(nodes), me["speed"], me.get("zone"), now=now,
-                         beacons=beacons, rate=rate, check=check)
+                         beacons=beacons, rate=rate, check=check,
+                         counter_peers=counter_peers(name, config))
         self.lock = threading.Lock()     # node is shared with camera threads
 
         # local sim: bind to 127.0.0.1 (no firewall prompt); real devices: all interfaces

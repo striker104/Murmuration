@@ -71,9 +71,11 @@ class LearnAddress(unittest.TestCase):
 class DecodeConfig(unittest.TestCase):
     """'work': 'decode' loads beacons.json next to the config; missing file -> counter mode."""
 
-    def start(self, with_beacons):
+    def start(self, with_beacons, nicla_counter=False, name="a"):
         cfg = copy.deepcopy(BASE)
         cfg["work"] = "decode"
+        if nicla_counter:
+            cfg["nodes"]["b"]["work"] = "counter"
         cfg["nodes"]["a"]["rate"] = 100
         d = tempfile.mkdtemp()
         path = os.path.join(d, "config.json")
@@ -83,7 +85,7 @@ class DecodeConfig(unittest.TestCase):
             b = beacon.lock("T", "hi", "07", 2, "a1b2c3d4", 3)
             with open(os.path.join(d, "beacons.json"), "w") as f:
                 json.dump({"rounds": 3, "beacons": {"7": b}}, f)
-        r = Runner("a", load_config(path))
+        r = Runner(name, load_config(path))
         self.addCleanup(r.gossip_sock.close)
         self.addCleanup(r.ctl_sock.close)
         return r
@@ -95,6 +97,14 @@ class DecodeConfig(unittest.TestCase):
         b = r.node.beacons["7"]
         self.assertTrue(r.node.check(b, "07"))
         self.assertFalse(r.node.check(b, "08"))
+
+    def test_counter_marked_peer_is_passed_to_node(self):
+        r = self.start(True, nicla_counter=True)
+        self.assertEqual(r.node.counter_peers, {"b"})
+
+    def test_node_marked_counter_runs_counter_mode(self):
+        r = self.start(True, nicla_counter=True, name="b")
+        self.assertIsNone(r.node.beacons)
 
     def test_decode_missing_file_refuses_to_start(self):
         # a counter-mode node in a decoding swarm would push progress past un-checked PINs

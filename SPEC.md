@@ -82,9 +82,13 @@ each card's distress message — see `docs/superpowers/specs/2026-11-15-distress
 Per node, optional `"rate"`: guesses/s to use instead of measuring it at start-up.
 Cards with no beacon still use counter work (`speed`). Missing `beacons.json` → the node
 refuses to start.
-**Deploy rule: switch to `"work": "decode"` only when EVERY node (incl. the Nicla) decodes.**
-A counter-mode node in a decoding swarm advances beacon jobs without checking PINs, so the
-decoders resume past the real PIN (or the job ends "done" with no pin) — silently.
+**Nodes that can't decode yet:** mark them per node with `"work": "counter"` (today: the Nicla).
+A counter-mode node advances beacon jobs without checking PINs, so decoders would resume past
+the real PIN (or the job would end "done" with no pin) — silently. So decoders treat gossip from
+a counter-marked peer like this, for **beacon jobs only**: keep that the card exists (id, zone,
+spotted_by → its camera spots still count), ignore its progress / done / claim / workers / pin.
+Non-beacon jobs merge normally. A counter-marked node running A's code also runs counter mode.
+When the Nicla decodes: delete its `"work": "counter"` and copy config.json everywhere.
 
 ---
 
@@ -340,6 +344,39 @@ pull the Pi's power · turn a laptop's WiFi off · close laptop 2's lid (nothing
   spotted but never claims or works on them. *(Known, accepted side effect: in the backup split
   the Nicla still counts as a member, so its ~¼ share waits until `alone_long` (15 s) during
   WiFi down.)*
+
+### Person B — to do for decode mode (distress decoding)
+Full design: `docs/superpowers/specs/2026-11-15-distress-decoding-design.md`. Reference code:
+`core/beacon.py` (A). The swarm already runs decode mode on webcam + UNO Q + Pi.
+
+**Nicla (`nicla/main.py`)**
+1. **Keep the `pin` field** when merging (§6: non-null wins; both non-null → lower string).
+   Today the Nicla rebuilds each job without it — fix this even before the rest.
+2. **Slow hash:** copy `pbkdf2_ref` from `core/beacon.py` (hand-written HMAC-SHA256, no `hmac`
+   module, no `.copy()`). `check = sha256(key)` first 8 bytes as hex. Verify against
+   `python -m core.beacon --vectors` (run on a laptop) — all 4 lines must match exactly.
+3. **Beacons:** copy `beacons.json` (repo root) onto the Nicla; `rounds` is in it (500).
+   Memory: only `digits`, `salt`, `check` per card are needed (skip `ct`/`title`).
+4. **Crack between camera frames:** for my current job, `n = round(progress * 10**digits)`;
+   try a few PINs (`str(n)` zero-padded to `digits`), keeping each loop under ~60 ms; found →
+   `pin = guess, progress = 1.0, done = true`; else `progress = n / 10**digits`. All tried with
+   no match → `done = true`, pin stays null.
+5. **Bid** for beacon jobs = `1 / my_guesses_per_s` (measure once at boot: time ~20 guesses).
+   No zone bonus. **Take-back** (§7.1 decode): when free and connected, claim a job owned by
+   someone else at any progress if `my_bid < 0.5 * job.bid` (same epoch). Cards without a beacon:
+   unchanged counter work.
+6. Telemetry: add `"trying"` (current guess string or null) and `"rate"` (guesses/s).
+7. Done? Tell A → A removes `"work": "counter"` from the Nicla in config.json.
+
+**Dashboard (`dashboard/`)**
+1. Per node column: show `trying` (big digits, the PIN being tried now) and `rate`.
+   `CRASHED` when mode is crashed (trying is null then).
+2. Per job: progress bar as today; when `done` and `pin` is set → show 🔓 + the PIN, and the
+   decoded message: `core.beacon.unlock(beacons["7"], pin, rounds)` with
+   `rounds, beacons = core.beacon.load_beacons("beacons.json")` (server side, Python).
+   `done` with `pin` null = "unsolved" (shouldn't happen).
+3. A "decoded messages" strip: each rescued card's title + message, newest first.
+4. Unknown extra telemetry fields must be ignored (they are, today).
 
 ### Laptop 2 (B) — `dashboard/`
 - `server.py`: listens UDP 5006, keeps latest telemetry per node, serves `index.html`

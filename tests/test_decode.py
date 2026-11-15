@@ -97,6 +97,43 @@ class SingleNode(unittest.TestCase):
         self.assertIsNone(Node("x", [], 0.1).telemetry(0.0)["trying"])
 
 
+class CounterPeer(unittest.TestCase):
+    """A peer marked as counter-only (Nicla before its decode port): its spots count,
+    its progress / done / claim on beacon jobs don't (it never checked any PINs)."""
+
+    def gossip_from_nicla(self, job):
+        return {"type": "gossip", "v": 1, "from": "nicla", "seq": 1, "jobs": {job["id"]: job}}
+
+    def node(self):
+        return Node("pi", ["nicla", "webcam"], 0.08, None, beacons={"3": make("17", 2)},
+                    rate=50, check=check1, counter_peers=["nicla"])
+
+    def test_counter_peer_spot_is_kept_but_its_work_ignored(self):
+        node = self.node()
+        j = new_job("3", "B", "nicla")
+        j.update(progress=0.9, done=True, owner="nicla", bid=20.0, workers=["nicla"])
+        self.assertTrue(node.on_gossip(self.gossip_from_nicla(j), 0.0))
+        mine = node.jobs["3"]
+        self.assertEqual((mine["zone"], mine["spotted_by"]), ("B", "nicla"))
+        self.assertEqual((mine["progress"], mine["done"], mine["owner"]), (0.0, False, None))
+
+    def test_counter_peer_cannot_raise_existing_progress(self):
+        node = self.node()
+        node.spot("3", 0.0)
+        node.jobs["3"]["progress"] = 0.4
+        j = new_job("3", "B", "nicla")
+        j.update(progress=0.9, owner="nicla", bid=20.0)
+        node.on_gossip(self.gossip_from_nicla(j), 0.1)
+        self.assertEqual(node.jobs["3"]["progress"], 0.4)
+
+    def test_counter_peer_non_beacon_job_merges_normally(self):
+        node = self.node()
+        j = new_job("30", "B", "nicla")
+        j.update(progress=0.5, owner="nicla", bid=20.0)
+        node.on_gossip(self.gossip_from_nicla(j), 0.0)
+        self.assertEqual(node.jobs["30"]["progress"], 0.5)
+
+
 class Swarm(unittest.TestCase):
     def setUp(self):
         self.beacons = {"5": make("9999", 4)}

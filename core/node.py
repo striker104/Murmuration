@@ -97,12 +97,14 @@ def new_job(tag_id, zone, spotted_by):
 
 class Node:
     def __init__(self, name, peers, speed, zone=None, now=0.0,
-                 beacons=None, rate=None, check=None):
+                 beacons=None, rate=None, check=None, counter_peers=()):
         """beacons=None -> counter mode (progress += speed*TICK).
 
         Decode mode: beacons = {card_id: beacon}, rate = my guesses/s (measured by net.py),
         check(beacon, pin_str) -> bool does ONE real slow-hash guess (core/beacon.py).
         Cards with no beacon still use counter work.
+        counter_peers: peers that can't decode yet (config "work": "counter" on that node).
+        Their spots are kept, but their progress/done/claim on beacon jobs is ignored.
         """
         self.name = name
         self.peers = sorted(p for p in peers if p != name)
@@ -126,6 +128,7 @@ class Node:
         self.rate = rate
         self.check = check
         self.trying = None              # last PIN guessed (for the dashboard)
+        self.counter_peers = set(counter_peers) if beacons else set()
 
         # fault injection flags
         self.blind = False
@@ -176,7 +179,11 @@ class Node:
             return False
         self.last_heard[sender] = now
         for jid, remote in (msg.get("jobs") or {}).items():
-            self._merge_in(str(jid), remote, now)
+            jid = str(jid)
+            if sender in self.counter_peers and self.beacons and jid in self.beacons:
+                # it never checked any PINs: keep only that the card exists (its spot)
+                remote = new_job(jid, remote.get("zone"), remote.get("spotted_by"))
+            self._merge_in(jid, remote, now)
         return True
 
     def _merge_in(self, jid, remote, now):
