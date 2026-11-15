@@ -19,6 +19,8 @@ OUTBID_MAX_PROGRESS = 0.5
 DETECT_STABLE_FRAMES = 3
 RESET_QUIET = 1.0          # SPEC §8.3 reset: ignore gossip this long after a reset
 CHUNK_JOBS = 6             # SPEC §8.1: max jobs per gossip message
+WORK_FRACTION = 0.6        # decode mode: spend ~60 % of a tick hashing, rest for gossip
+TAKEBACK_RATIO = 0.5       # decode mode: free node takes a job at ANY progress if 2x faster
 
 
 # ---- merge rule (SPEC §6) --------------------------------------------------
@@ -94,7 +96,14 @@ def new_job(tag_id, zone, spotted_by):
 # ---- the node ---------------------------------------------------------------
 
 class Node:
-    def __init__(self, name, peers, speed, zone=None, now=0.0):
+    def __init__(self, name, peers, speed, zone=None, now=0.0,
+                 beacons=None, rate=None, check=None):
+        """beacons=None -> counter mode (progress += speed*TICK).
+
+        Decode mode: beacons = {card_id: beacon}, rate = my guesses/s (measured by net.py),
+        check(beacon, pin_str) -> bool does ONE real slow-hash guess (core/beacon.py).
+        Cards with no beacon still use counter work.
+        """
         self.name = name
         self.peers = sorted(p for p in peers if p != name)
         self.speed = float(speed)
@@ -112,6 +121,12 @@ class Node:
         self.blocked = set()
         self.current = None
 
+        # decode mode (None = counter mode)
+        self.beacons = beacons
+        self.rate = rate
+        self.check = check
+        self.trying = None              # last PIN guessed (for the dashboard)
+
         # fault injection flags
         self.blind = False
         self.crashed = False
@@ -124,7 +139,12 @@ class Node:
         self.events = []                # (kind, job_id, mode) for logs; caller pops them
 
     # -- helpers ------------------------------------------------------------
+    def _decoding(self, job):
+        return bool(self.beacons) and job["id"] in self.beacons
+
     def my_bid(self, job):
+        if self._decoding(job):
+            return round(1.0 / self.rate, 6)       # seconds per guess; no zone bonus
         bid = 1.0 / self.speed
         if self.zone is not None and job.get("zone") == self.zone:
             bid -= 0.5
@@ -273,9 +293,12 @@ class Node:
                 return "claim"
             if now - self.last_change.get(job["id"], now) > LEASE:
                 return "takeover"
-            if (job["bid"] is not None and self.my_bid(job) < job["bid"]
-                    and job["progress"] < OUTBID_MAX_PROGRESS):
-                return "claim"      # outbid: same epoch, my bid
+            if job["bid"] is not None:
+                if self._decoding(job):
+                    if self.my_bid(job) < TAKEBACK_RATIO * job["bid"]:
+                        return "claim"  # take-back: much faster, any progress, same epoch
+                elif self.my_bid(job) < job["bid"] and job["progress"] < OUTBID_MAX_PROGRESS:
+                    return "claim"      # outbid: same epoch, my bid
             return None
         if self.mode == "isolated":
             if owner is None and self._in_my_share(job):
@@ -307,8 +330,28 @@ class Node:
         self.last_change[jid] = now
         self.current = jid
 
+    def _work_decode(self, job):
+        """Try the next batch of PINs in order 0..10^digits-1. Returns 'found'|'exhausted'|None."""
+        b = self.beacons[job["id"]]
+        digits = int(b["digits"])
+        total = 10 ** digits
+        n = int(round(job["progress"] * total))       # resume at the exact next guess
+        budget = max(1, int(self.rate * TICK * WORK_FRACTION))
+        while budget > 0 and n < total:
+            guess = "0" * (digits - len(str(n))) + str(n)
+            self.trying = guess
+            if self.check(b, guess):
+                job["pin"] = guess
+                job["progress"] = 1.0
+                return "found"
+            n += 1
+            budget -= 1
+        job["progress"] = n / float(total)
+        return "exhausted" if n >= total else None
+
     def tick(self, now):
         if self.crashed:
+            self.trying = None
             return
         self._update_mode(now)
 
@@ -319,16 +362,26 @@ class Node:
         if self.current is None:
             self._choose(now)
 
-        if self.current:
-            job = self.jobs[self.current]
-            job["progress"] = round(min(1.0, job["progress"] + self.speed * TICK), 4)
-            if self.name not in job["workers"]:
-                job["workers"] = sorted(job["workers"] + [self.name])
-            self.last_change[self.current] = now
-            if job["progress"] >= 1.0:
+        if not self.current:
+            self.trying = None
+            return
+        job = self.jobs[self.current]
+        if self.name not in job["workers"]:
+            job["workers"] = sorted(job["workers"] + [self.name])
+        self.last_change[self.current] = now
+        if self._decoding(job):
+            result = self._work_decode(job)
+            if result:
                 job["done"] = True
-                self._event("rescued", self.current)
+                self._event("rescued" if result == "found" else "unsolved", self.current)
                 self.current = None
+            return
+        self.trying = None
+        job["progress"] = round(min(1.0, job["progress"] + self.speed * TICK), 4)
+        if job["progress"] >= 1.0:
+            job["done"] = True
+            self._event("rescued", self.current)
+            self.current = None
 
     # -- outputs ----------------------------------------------------------------
     def gossip_targets(self):
@@ -364,6 +417,8 @@ class Node:
             "blocked": sorted(self.blocked),
             "blind": self.blind,
             "current": self.current,
+            "trying": None if self.crashed else self.trying,
+            "rate": self.rate,
             "jobs": self.jobs,
             "seq": self.telemetry_seq,
         }

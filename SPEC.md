@@ -76,6 +76,12 @@ murmuration/
 
 `speed` = progress per second (0.12 ≈ 8 s per rescue, 0.05 = 20 s).
 
+**Decode mode (optional):** top-level `"work": "decode"` (default `"counter"` = everything above,
+unchanged). Then each node loads `beacons.json` (next to the config) and cracks the PIN that locks
+each card's distress message — see `docs/superpowers/specs/2026-11-15-distress-decoding-design.md`.
+Per node, optional `"rate"`: guesses/s to use instead of measuring it at start-up.
+Cards with no beacon still use counter work (`speed`). Missing `beacons.json` → counter mode.
+
 ---
 
 ## 4. Constants
@@ -113,6 +119,7 @@ no real clock). All timeouts use each node's *own* monotonic clock (`time.monoto
   "owner": "unoq",      // null if unclaimed
   "epoch": 0,           // increases every time someone TAKES OVER a job from another owner
   "bid": 8.33,          // owner's bid (lower is better) = 1/speed (+ small zone bonus)
+                        // DECODE MODE: seconds per guess = 1/rate, no zone bonus
   "workers": ["unoq"],  // every node that ever advanced this job (for duplicate-effort score)
   "pin": null           // DECODE MODE: the PIN once found ("0420"), else null. Missing = null.
 }
@@ -165,6 +172,10 @@ Because of this, it doesn't matter what order messages arrive in, or if some are
 4. if current is null → choose a job (see 7.1) and claim it
 5. if current → progress += speed * TICK (cap 1.0); add me to workers; last_change = now;
                 if progress >= 1.0 → done = true
+   DECODE MODE (job has a beacon): instead try the next PINs in order, starting at guess
+   n = round(progress * 10^digits), about rate*TICK*0.6 guesses per tick (at least 1);
+   progress = n / 10^digits. Found → pin = guess, progress = 1.0, done = true.
+   All guesses tried without a match → done = true, pin stays null.
 6. every GOSSIP_INTERVAL → send full job list to every reachable-or-not, non-blocked peer
    (send to all non-blocked peers even if silent — that's how we rediscover them)
 7. every TELEMETRY_INTERVAL → send telemetry to dashboard
@@ -177,6 +188,8 @@ Candidates depend on mode:
 - **connected:** jobs not done AND (unclaimed OR lease expired OR I can outbid)
   - *lease expired* = `now - last_change[job] > LEASE`
   - *outbid* = owner is someone else, same epoch, `my_bid < job.bid`, and `progress < OUTBID_MAX_PROGRESS`
+  - DECODE MODE instead: *take-back* = owner is someone else, same epoch, `my_bid < 0.5 * job.bid`,
+    at **any** progress (resuming from the exact guess wastes nothing)
 - **isolated** (alone < 15 s): jobs not done AND unclaimed AND in **my share**
   - my share: `members = sorted(members_snapshot + [me])`; job is mine if `int(job.id) % len(members) == members.index(me)`
   - don't touch jobs other nodes claimed — they're probably still working on them
@@ -226,6 +239,8 @@ the merge rule already handles partial lists. Receivers use a buffer of at least
  "blocked": ["nicla"],
  "blind": false,
  "current": "7",
+ "trying": "0421",      // DECODE MODE: PIN being tried right now (null if idle/counter)
+ "rate": 183.0,         // DECODE MODE: my guesses per second (null in counter mode)
  "jobs": { ...same as gossip... },
  "seq": 99}
 ```
