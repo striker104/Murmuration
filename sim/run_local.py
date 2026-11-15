@@ -1,6 +1,7 @@
 """Start all 4 nodes on this laptop (config.local.json). Works in PowerShell, cmd, Git Bash, Mac, Linux.
 
     python sim/run_local.py
+    set MURM_CONFIG=config.decode.local.json&& python sim/run_local.py     (cmd: decode mode)
 
 Ctrl-C stops them all. (sim/run_local.sh does the same but needs Git Bash — on Windows,
 'bash' in PowerShell opens WSL, which can't talk to Windows programs on 127.0.0.1.)
@@ -19,7 +20,7 @@ def main():
     for n in NAMES:
         procs.append(subprocess.Popen(
             [sys.executable, "-u", "-m", "core.run_node", "--name", n,
-             "--config", "config.local.json"],
+             "--config", os.environ.get("MURM_CONFIG", "config.local.json")],
             cwd=ROOT))
     print("started %d nodes; Ctrl-C to stop" % len(procs), flush=True)
     try:
