@@ -88,19 +88,32 @@ class Runner:
 
     # -- the loop ----------------------------------------------------------
     def _recv_all(self, sock):
+        """All pending packets as [(msg, (src_ip, src_port))]."""
         out = []
         while True:
             try:
-                data, _ = sock.recvfrom(MAX_PACKET)
+                data, src = sock.recvfrom(MAX_PACKET)
             except BlockingIOError:
                 return out
             except (ConnectionResetError, OSError):
                 # Windows/Linux can surface ICMP errors here; ignore and keep draining
                 return out
             try:
-                out.append(json.loads(data.decode("utf-8")))
+                out.append((json.loads(data.decode("utf-8")), src))
             except (ValueError, UnicodeDecodeError):
                 pass
+
+    def _learn_address(self, sender, src_ip):
+        """Peer's IP changed (DHCP)? Learn it from the gossip it sent us.
+
+        Only for accepted gossip from a known node name (on_gossip checked that).
+        Keep the configured PORT: a peer may send from a different socket than it listens on.
+        """
+        old_ip, port = self.addr[sender]
+        if src_ip != old_ip:
+            self.addr[sender] = (src_ip, port)
+            print("[%s] %s address %s -> %s (learned from its gossip)"
+                  % (self.name, sender, old_ip, src_ip), flush=True)
 
     def _send(self, data, addr):
         try:
@@ -113,12 +126,13 @@ class Runner:
         now = time.monotonic()
         node = self.node
         with self.lock:
-            for msg in self._recv_all(self.ctl_sock):
+            for msg, _ in self._recv_all(self.ctl_sock):
                 node.on_control(msg, now)
-            for msg in self._recv_all(self.gossip_sock):
+            for msg, src in self._recv_all(self.gossip_sock):
                 if random.random() < node.loss:          # flaky: drop on receive
                     continue
-                node.on_gossip(msg, now)
+                if node.on_gossip(msg, now):
+                    self._learn_address(msg["from"], src[0])
 
             node.tick(now)
 
