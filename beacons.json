@@ -1,0 +1,89 @@
+{
+ "beacons": {
+  "0": {
+   "check": "1a5a0a9f7c276564",
+   "ct": "170abefed80ae8f2e7ef3d490ca366c5e5560abb713057f95be8e5b34a5de02e42c2e108690165f1b6629448a785cf27ee14a4e1accc93bb37bfe998250010",
+   "digits": 5,
+   "salt": "2fc9828d",
+   "title": "Maria"
+  },
+  "1": {
+   "check": "aad4e2c1266ab63a",
+   "ct": "bd6cd6999cec51209e64d996b98cceecd0053dd12bfb9aee3ac875a34ff2ff063804bd76a5301e8312f86a6602308fea87164da2",
+   "digits": 5,
+   "salt": "76e341ad",
+   "title": "Tom"
+  },
+  "10": {
+   "check": "d7b1d81ef5b82975",
+   "ct": "e5ce4f0d61234f3329d1c7eb0144cb44d7d88c40e474e2b555a2e35f47af7a50d0d47854b91a2604344a1bdb",
+   "digits": 3,
+   "salt": "23c947a8",
+   "title": "Ravi"
+  },
+  "11": {
+   "check": "a83b9626056ce063",
+   "ct": "e193d77f1a69488c1508a9d52e448c97f841d914f78859406c247504ca770629d0ac21088299a8464faad13ec53407",
+   "digits": 2,
+   "salt": "4a5d6388",
+   "title": "Zoe"
+  },
+  "2": {
+   "check": "17a639bc050500c7",
+   "ct": "19e26a565afa127ac736b30342e1e9fd937d57cf3b8e4bbebccc0bc0945a0c1b47d8cc64a462693fa032cfaf3d886f5819b873e1520dceac79ed",
+   "digits": 5,
+   "salt": "04a504ae",
+   "title": "Aisha"
+  },
+  "3": {
+   "check": "a3491fc02e7043c4",
+   "ct": "460b1182c180cd796dc8c4847242d6dbf2328c77a2734d8505a9672d10d1e05e05c6c789ee434810d90b8c96d3e2d34ff57a04",
+   "digits": 5,
+   "salt": "f101ad5a",
+   "title": "Jonas"
+  },
+  "4": {
+   "check": "c54aa537504093ee",
+   "ct": "412e79cadcb6f08148ea08b4e28120cee1ef99e447893b1f6de3199bc638db09671ba33c64d084e389add029c691d5",
+   "digits": 4,
+   "salt": "404efe11",
+   "title": "Priya"
+  },
+  "5": {
+   "check": "1a774a18b629f752",
+   "ct": "04fa0a7e6809704e7e7a3b5878310c7f4b798eaf45070294b272f9fe3b4b25e969e0c12b9badd536508865e20c80e54c6e",
+   "digits": 4,
+   "salt": "ce4f66b7",
+   "title": "Leo"
+  },
+  "6": {
+   "check": "93c5a11e73449c2c",
+   "ct": "91a7dac6988e0f285a344e39b68b1e6459a56d6e59a594e88b060692cc40d52da5eae7e8b9b824da08290f6f979b2357b581b0b8",
+   "digits": 4,
+   "salt": "7c7f65be",
+   "title": "Sam"
+  },
+  "7": {
+   "check": "0a820396fa31a687",
+   "ct": "cf18c718b92261d57c9eb208b2f99fcbbbaeb764c1f7832a2718e126cf3d5ed5315134443e566db10756bd",
+   "digits": 4,
+   "salt": "c7e72853",
+   "title": "Ella"
+  },
+  "8": {
+   "check": "45f570cf25a79c02",
+   "ct": "b0898332ae52a0ba694aae862eeb471b11b69b3bf4bcc88cc759de48c33dcfde2f90aa7e9c9c85ce842fca8430d633",
+   "digits": 3,
+   "salt": "cf964ae4",
+   "title": "Omar"
+  },
+  "9": {
+   "check": "678d4384646b7e97",
+   "ct": "6b53cdd33f2237c76cb9246d38a4675bdd1c7b77a936f1f4cf0d8bb1bfdc957cc77e33ad5991ec7d9b1adb",
+   "digits": 3,
+   "salt": "6c2ebb2f",
+   "title": "Nina"
+  }
+ },
+ "rounds": 500
+}

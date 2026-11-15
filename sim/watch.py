@@ -16,7 +16,7 @@ ROOT = os.path.join(os.path.dirname(__file__), "..")
 
 def fmt_job(j):
     if j["done"]:
-        return "#%s done" % j["id"]
+        return "#%s done%s" % (j["id"], " pin=" + j["pin"] if j.get("pin") else "")
     return "#%s %3d%% %s" % (j["id"], int(j["progress"] * 100), j["owner"] or "-")
 
 
@@ -49,8 +49,9 @@ def main(argv):
                     print("%-7s NO SIGNAL" % n)
                     continue
                 jobs = sorted(m["jobs"].values(), key=lambda j: int(j["id"]))
-                print("%-7s %-10s cur=%-4s blk=%s  %s" % (
-                    n, m["mode"], m["current"], ",".join(m["blocked"]) or "-",
+                print("%-7s %-10s cur=%-4s try=%-6s blk=%s  %s" % (
+                    n, m["mode"], m["current"], m.get("trying") or "-",
+                    ",".join(m["blocked"]) or "-",
                     "  ".join(fmt_job(j) for j in jobs)))
             sys.stdout.flush()
 

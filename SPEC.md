@@ -76,6 +76,20 @@ murmuration/
 
 `speed` = progress per second (0.12 ≈ 8 s per rescue, 0.05 = 20 s).
 
+**Decode mode (optional):** top-level `"work": "decode"` (default `"counter"` = everything above,
+unchanged). Then each node loads `beacons.json` (next to the config) and cracks the PIN that locks
+each card's distress message — see `docs/superpowers/specs/2026-11-15-distress-decoding-design.md`.
+Per node, optional `"rate"`: guesses/s to use instead of measuring it at start-up.
+Cards with no beacon still use counter work (`speed`). Missing `beacons.json` → the node
+refuses to start.
+**Nodes that can't decode yet:** mark them per node with `"work": "counter"` (today: the Nicla).
+A counter-mode node advances beacon jobs without checking PINs, so decoders would resume past
+the real PIN (or the job would end "done" with no pin) — silently. So decoders treat gossip from
+a counter-marked peer like this, for **beacon jobs only**: keep that the card exists (id, zone,
+spotted_by → its camera spots still count), ignore its progress / done / claim / workers / pin.
+Non-beacon jobs merge normally. A counter-marked node running A's code also runs counter mode.
+When the Nicla decodes: delete its `"work": "counter"` and copy config.json everywhere.
+
 ---
 
 ## 4. Constants
@@ -113,7 +127,9 @@ no real clock). All timeouts use each node's *own* monotonic clock (`time.monoto
   "owner": "unoq",      // null if unclaimed
   "epoch": 0,           // increases every time someone TAKES OVER a job from another owner
   "bid": 8.33,          // owner's bid (lower is better) = 1/speed (+ small zone bonus)
-  "workers": ["unoq"]   // every node that ever advanced this job (for duplicate-effort score)
+                        // DECODE MODE: seconds per guess = 1/rate, no zone bonus
+  "workers": ["unoq"],  // every node that ever advanced this job (for duplicate-effort score)
+  "pin": null           // DECODE MODE: the PIN once found ("0420"), else null. Missing = null.
 }
 ```
 
@@ -142,6 +158,7 @@ no real clock). All timeouts use each node's *own* monotonic clock (`time.monoto
 | `progress` | `max(a, b)` |
 | claim (`owner`, `epoch`, `bid`) | take the claim from whichever side wins: **higher `epoch`** wins; tie → **lower `bid`**; tie → **lower `owner` name**. A `null` owner loses to any real owner at the same epoch. |
 | `workers` | union (sorted) |
+| `pin` | non-null wins; both non-null → **lower** string (missing field = null) |
 | `id`, `sev` | keep local (identical anyway — both come from the tag id) |
 | `zone`, `spotted_by` | take both from the side whose `spotted_by` name is **lower** (alphabetically). Needed because a card on the middle line can be spotted by both cameras with different zones — "keep local" would never converge and isn't commutative |
 
@@ -163,6 +180,10 @@ Because of this, it doesn't matter what order messages arrive in, or if some are
 4. if current is null → choose a job (see 7.1) and claim it
 5. if current → progress += speed * TICK (cap 1.0); add me to workers; last_change = now;
                 if progress >= 1.0 → done = true
+   DECODE MODE (job has a beacon): instead try the next PINs in order, starting at guess
+   n = round(progress * 10^digits), about rate*TICK*0.6 guesses per tick (at least 1);
+   progress = n / 10^digits. Found → pin = guess, progress = 1.0, done = true.
+   All guesses tried without a match → done = true, pin stays null.
 6. every GOSSIP_INTERVAL → send full job list to every reachable-or-not, non-blocked peer
    (send to all non-blocked peers even if silent — that's how we rediscover them)
 7. every TELEMETRY_INTERVAL → send telemetry to dashboard
@@ -175,6 +196,8 @@ Candidates depend on mode:
 - **connected:** jobs not done AND (unclaimed OR lease expired OR I can outbid)
   - *lease expired* = `now - last_change[job] > LEASE`
   - *outbid* = owner is someone else, same epoch, `my_bid < job.bid`, and `progress < OUTBID_MAX_PROGRESS`
+  - DECODE MODE instead: *take-back* = owner is someone else, same epoch, `my_bid < 0.5 * job.bid`,
+    at **any** progress (resuming from the exact guess wastes nothing)
 - **isolated** (alone < 15 s): jobs not done AND unclaimed AND in **my share**
   - my share: `members = sorted(members_snapshot + [me])`; job is mine if `int(job.id) % len(members) == members.index(me)`
   - don't touch jobs other nodes claimed — they're probably still working on them
@@ -224,6 +247,8 @@ the merge rule already handles partial lists. Receivers use a buffer of at least
  "blocked": ["nicla"],
  "blind": false,
  "current": "7",
+ "trying": "0421",      // DECODE MODE: PIN being tried right now (null if idle/counter)
+ "rate": 183.0,         // DECODE MODE: my guesses per second (null in counter mode)
  "jobs": { ...same as gossip... },
  "seq": 99}
 ```
@@ -319,6 +344,39 @@ pull the Pi's power · turn a laptop's WiFi off · close laptop 2's lid (nothing
   spotted but never claims or works on them. *(Known, accepted side effect: in the backup split
   the Nicla still counts as a member, so its ~¼ share waits until `alone_long` (15 s) during
   WiFi down.)*
+
+### Person B — to do for decode mode (distress decoding)
+Full design: `docs/superpowers/specs/2026-11-15-distress-decoding-design.md`. Reference code:
+`core/beacon.py` (A). The swarm already runs decode mode on webcam + UNO Q + Pi.
+
+**Nicla (`nicla/main.py`)**
+1. **Keep the `pin` field** when merging (§6: non-null wins; both non-null → lower string).
+   Today the Nicla rebuilds each job without it — fix this even before the rest.
+2. **Slow hash:** copy `pbkdf2_ref` from `core/beacon.py` (hand-written HMAC-SHA256, no `hmac`
+   module, no `.copy()`). `check = sha256(key)` first 8 bytes as hex. Verify against
+   `python -m core.beacon --vectors` (run on a laptop) — all 4 lines must match exactly.
+3. **Beacons:** copy `beacons.json` (repo root) onto the Nicla; `rounds` is in it (500).
+   Memory: only `digits`, `salt`, `check` per card are needed (skip `ct`/`title`).
+4. **Crack between camera frames:** for my current job, `n = round(progress * 10**digits)`;
+   try a few PINs (`str(n)` zero-padded to `digits`), keeping each loop under ~60 ms; found →
+   `pin = guess, progress = 1.0, done = true`; else `progress = n / 10**digits`. All tried with
+   no match → `done = true`, pin stays null.
+5. **Bid** for beacon jobs = `1 / my_guesses_per_s` (measure once at boot: time ~20 guesses).
+   No zone bonus. **Take-back** (§7.1 decode): when free and connected, claim a job owned by
+   someone else at any progress if `my_bid < 0.5 * job.bid` (same epoch). Cards without a beacon:
+   unchanged counter work.
+6. Telemetry: add `"trying"` (current guess string or null) and `"rate"` (guesses/s).
+7. Done? Tell A → A removes `"work": "counter"` from the Nicla in config.json.
+
+**Dashboard (`dashboard/`)**
+1. Per node column: show `trying` (big digits, the PIN being tried now) and `rate`.
+   `CRASHED` when mode is crashed (trying is null then).
+2. Per job: progress bar as today; when `done` and `pin` is set → show 🔓 + the PIN, and the
+   decoded message: `core.beacon.unlock(beacons["7"], pin, rounds)` with
+   `rounds, beacons = core.beacon.load_beacons("beacons.json")` (server side, Python).
+   `done` with `pin` null = "unsolved" (shouldn't happen).
+3. A "decoded messages" strip: each rescued card's title + message, newest first.
+4. Unknown extra telemetry fields must be ignored (they are, today).
 
 ### Laptop 2 (B) — `dashboard/`
 - `server.py`: listens UDP 5006, keeps latest telemetry per node, serves `index.html`

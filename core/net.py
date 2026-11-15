@@ -6,12 +6,14 @@
 Camera adapters run the loop in a thread and call runner.spot(tag) from their own loop.
 """
 import json
+import os
 import random
 import socket
 import sys
 import threading
 import time
 
+from core import beacon
 from core.node import Node, TICK, GOSSIP_INTERVAL, TELEMETRY_INTERVAL
 
 MAX_PACKET = 2048          # SPEC §8.1: receive buffer
@@ -19,7 +21,44 @@ MAX_PACKET = 2048          # SPEC §8.1: receive buffer
 
 def load_config(path):
     with open(path) as f:
-        return json.load(f)
+        cfg = json.load(f)
+    cfg["_dir"] = os.path.dirname(os.path.abspath(path))   # where beacons.json lives
+    return cfg
+
+
+def decode_setup(name, config):
+    """'work': 'decode' -> (beacons, rate, check); otherwise (None, None, None) = counter mode."""
+    if config.get("work", "counter") != "decode":
+        return None, None, None
+    if config["nodes"][name].get("work") == "counter":
+        print("[%s] marked \"work\": \"counter\" -> counter mode" % name, flush=True)
+        return None, None, None
+    path = os.path.join(config.get("_dir", "."), "beacons.json")
+    try:
+        rounds, beacons = beacon.load_beacons(path)
+    except (OSError, ValueError, KeyError) as e:
+        # refuse to start (like a port clash): a counter-mode node in a decoding swarm would
+        # push progress past PINs nobody checked, and those messages would never unlock
+        raise SystemExit("[%s] decode mode but can't load %s (%s) — copy beacons.json next "
+                         "to the config, or set \"work\": \"counter\"" % (name, path, e))
+    rate = config["nodes"][name].get("rate")
+    how = "from config"
+    if not rate:
+        rate = round(beacon.bench(rounds), 1)
+        how = "measured"
+    print("[%s] decode mode: %d beacons, %.0f guesses/s (%s)" % (name, len(beacons), rate, how),
+          flush=True)
+
+    def check(b, pin):
+        return beacon.check(b, pin, rounds)
+    return beacons, float(rate), check
+
+
+def counter_peers(name, config):
+    """Decode mode: peers marked "work": "counter" in config (can't decode yet, e.g. Nicla)."""
+    if config.get("work", "counter") != "decode":
+        return []
+    return [n for n, c in config["nodes"].items() if n != name and c.get("work") == "counter"]
 
 
 def _encode(msg):
@@ -50,7 +89,11 @@ class Runner:
         self.on_event = on_event or (lambda kind, job_id, mode: None)
 
         now = time.monotonic()
-        self.node = Node(name, list(nodes), me["speed"], me.get("zone"), now=now)
+        beacons, rate, check = decode_setup(name, config)
+        now = time.monotonic()           # after the benchmark
+        self.node = Node(name, list(nodes), me["speed"], me.get("zone"), now=now,
+                         beacons=beacons, rate=rate, check=check,
+                         counter_peers=counter_peers(name, config))
         self.lock = threading.Lock()     # node is shared with camera threads
 
         # local sim: bind to 127.0.0.1 (no firewall prompt); real devices: all interfaces
@@ -76,6 +119,7 @@ class Runner:
                 "current": n.current,
                 "mode": "crashed" if n.crashed else n.mode,
                 "blind": n.blind,
+                "trying": n.trying,
                 "reachable": sorted(n.reachable(time.monotonic())),
             }
 

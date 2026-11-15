@@ -23,6 +23,7 @@ def random_copy(rng):
     j["epoch"] = rng.randint(0, 2)
     j["bid"] = None if owner is None else rng.choice([7.833, 8.333, 12.5, 19.5, 20.0])
     j["workers"] = sorted(rng.sample(["nicla", "pi", "unoq", "webcam"], rng.randint(0, 3)))
+    j["pin"] = rng.choice([None, None, "0420", "0007"])
     return j
 
 
@@ -96,6 +97,16 @@ class TestMergeRules(unittest.TestCase):
         b = self.job(zone="B", spotted_by="nicla")
         self.assertEqual(merge_job(a, b)["zone"], "B")
         self.assertEqual(merge_job(b, a)["spotted_by"], "nicla")
+
+    def test_pin_non_null_wins(self):
+        self.assertEqual(merge_job(self.job(pin=None), self.job(pin="0420"))["pin"], "0420")
+        self.assertEqual(merge_job(self.job(pin="0420"), self.job(pin=None))["pin"], "0420")
+        self.assertEqual(merge_job(self.job(pin="0420"), self.job(pin="0007"))["pin"], "0007")
+
+    def test_old_peer_without_pin_field(self):
+        old = self.job()
+        del old["pin"]
+        self.assertEqual(merge_job(old, self.job(pin="0420"))["pin"], "0420")
 
 
 if __name__ == "__main__":

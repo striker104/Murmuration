@@ -16,14 +16,17 @@ MAX_GOSSIP_BYTES = 1400
 
 
 class Sim:
-    def __init__(self, seed=1):
+    def __init__(self, seed=1, beacons=None, rates=None, check=None):
+        """beacons/rates/check given -> decode mode (rates: {name: guesses per second})."""
         with open(CONFIG) as f:
             cfg = json.load(f)["nodes"]
         names = sorted(cfg)
         self.t = 0.0
         self.rng = random.Random(seed)
         self.nodes = {
-            n: Node(n, names, cfg[n]["speed"], cfg[n]["zone"], now=self.t) for n in names
+            n: Node(n, names, cfg[n]["speed"], cfg[n]["zone"], now=self.t,
+                    beacons=beacons, rate=(rates or {}).get(n), check=check)
+            for n in names
         }
         self.inbox = {n: [] for n in names}
         self.wire_down = False          # True = REAL network failure (not a 'block')
