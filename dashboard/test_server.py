@@ -76,5 +76,88 @@ class Scoreboard(unittest.TestCase):
         dash.ctl_sock.close()
 
 
+class Clock:
+    def __init__(self):
+        self.t = 100.0
+
+    def __call__(self):
+        return self.t
+
+
+def tele(node, current, jobs, mode="connected"):
+    return {"type": "telemetry", "node": node, "mode": mode, "current": current,
+            "jobs": {str(i): {"id": str(i), "sev": i, "progress": p, "done": p >= 1.0, "workers": []}
+                     for i, p in jobs.items()}}
+
+
+class TimelineInState(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.dash = server.Dashboard(CFG, clock=self.clock)
+        self.addCleanup(self.dash.ctl_sock.close)
+
+    def test_bars_use_round_time(self):
+        self.clock.t = 103.0
+        self.dash.on_telemetry(tele("pi", "3", {3: 0.2}))
+        self.clock.t = 104.0
+        tl = self.dash.state()["timeline"]
+        self.assertEqual(tl["now"], 4.0)
+        self.assertEqual([(s["node"], s["job"], s["start"], s["outcome"]) for s in tl["segments"]],
+                         [("pi", "3", 3.0, "live")])
+        self.assertEqual(tl["colors"], {"3": 0})
+
+    def test_silence_becomes_no_signal(self):
+        self.clock.t = 101.0
+        self.dash.on_telemetry(tele("pi", "3", {3: 0.2}))
+        self.clock.t = 101.0 + server.STALE_AFTER + 0.5
+        tl = self.dash.state()["timeline"]
+        self.assertEqual(tl["segments"][0]["outcome"], "left")
+        self.assertEqual(tl["outages"], [{"node": "pi", "kind": "no_signal", "start": 1.0, "end": None}])
+
+    def test_scenario_adds_marker_with_new_wording(self):
+        self.clock.t = 112.0
+        self.dash.run_scenario("crash", {"x": "unoq"})
+        st = self.dash.state()
+        self.assertEqual(st["timeline"]["markers"], [{"t": 12.0, "text": "Crashed unoq"}])
+        self.assertEqual(st["events"][-1]["text"], "Crashed unoq")
+
+    def test_reset_starts_a_new_round(self):
+        self.clock.t = 105.0
+        self.dash.on_telemetry(tele("pi", "3", {3: 0.2}))
+        self.clock.t = 130.0
+        self.dash.run_scenario("reset", {})
+        self.clock.t = 130.5
+        self.dash.on_telemetry(tele("pi", "3", {3: 0.3}))          # stale packet in the quiet period
+        self.clock.t = 134.0                                        # pi has been silent since before reset
+        tl = self.dash.state()["timeline"]
+        self.assertEqual(tl["now"], 4.0)
+        self.assertEqual((tl["segments"], tl["markers"], tl["colors"]), ([], [], {}))
+        self.assertTrue(all(o["start"] >= 0 for o in tl["outages"]))
+
+    def test_timeline_failure_does_not_break_the_dashboard(self):
+        def boom(*args):
+            raise RuntimeError("bug")
+        self.dash.timeline.on_telemetry = boom
+        self.dash.timeline.snapshot = boom
+        self.dash.on_telemetry(tele("pi", "3", {3: 0.2}))
+        st = self.dash.state()
+        self.assertIsNone(st["timeline"])
+        self.assertEqual(st["nodes"]["pi"]["telemetry"]["current"], "3")
+
+
+class EventWording(unittest.TestCase):
+    def test_describe(self):
+        cases = [("heal", {}, "Healed everything"), ("wifi_down", {}, "Took Wi-Fi down"),
+                 ("split", {}, "Split the team"), ("cameras_blind", {}, "Blinded both cameras"),
+                 ("reset", {}, "Reset the round"),
+                 ("cut", {"x": "webcam", "y": "nicla"}, "Cut the link between webcam and nicla"),
+                 ("blind", {"x": "nicla"}, "Blinded nicla's camera"),
+                 ("unblind", {"x": "nicla"}, "Restored nicla's camera"),
+                 ("crash", {"x": "pi"}, "Crashed pi"), ("revive", {"x": "pi"}, "Revived pi"),
+                 ("flaky", {}, "Started dropping 30% of messages")]
+        for name, params, text in cases:
+            self.assertEqual(server.describe(name, params), text)
+
+
 if __name__ == "__main__":
     unittest.main()
