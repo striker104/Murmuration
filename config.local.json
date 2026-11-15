@@ -1,0 +1,9 @@
+{
+  "nodes": {
+    "webcam": {"ip": "127.0.0.1", "gossip_port": 5101, "ctl_port": 5201, "speed": 0.12, "zone": "A"},
+    "nicla":  {"ip": "127.0.0.1", "gossip_port": 5102, "ctl_port": 5202, "speed": 0.05, "zone": "B"},
+    "unoq":   {"ip": "127.0.0.1", "gossip_port": 5103, "ctl_port": 5203, "speed": 0.12, "zone": null},
+    "pi":     {"ip": "127.0.0.1", "gossip_port": 5104, "ctl_port": 5204, "speed": 0.08, "zone": null}
+  },
+  "dashboard": {"ip": "127.0.0.1", "telemetry_port": 5006}
+}
